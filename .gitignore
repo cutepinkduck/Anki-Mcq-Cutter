@@ -1,0 +1,40 @@
+# 가상환경
+venv/
+.venv/
+env/
+.env
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 임시 및 사용자 데이터 (개인정보 포함 가능)
+temp_pdfs/
+workspace/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 로그
+*.log
+
+# 중복 문서
+readme.txt

@@ -1,0 +1,2394 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ANKI MCQ CUTTER</title>
+
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;700;900&display=swap');
+
+        body {
+            font-family: 'Pretendard', sans-serif;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #e2e8f0;
+            border-radius: 20px;
+            border: 2px solid white;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #cbd5e1;
+        }
+
+        .input-group label {
+            font-size: 10px;
+            font-weight: bold;
+            color: #64748b;
+            margin-bottom: 2px;
+            display: block;
+        }
+
+        .input-group input,
+        .input-group select,
+        .input-group textarea {
+            width: 100%;
+            padding: 6px 8px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            font-size: 12px;
+            color: #334155;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .input-group input:focus,
+        .input-group select:focus,
+        .input-group textarea:focus {
+            border-color: #6366f1;
+            ring: 2px;
+            ring-color: #e0e7ff;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
+
+        .modal-overlay {
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        .cursor-zoom-in {
+            cursor: zoom-in;
+        }
+
+        .cursor-zoom-out {
+            cursor: zoom-out;
+        }
+
+        .guard-active {
+            border: 3px solid #10b981 !important;
+            box-shadow: 0 0 30px rgba(16, 185, 129, 0.3);
+            background-color: #f0fdf4;
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+            filter: grayscale(100%);
+        }
+
+        .processed-overlay {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(2px);
+            border: 4px solid #10b981;
+        }
+    </style>
+</head>
+
+<body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo, useCallback, memo, Component } = React;
+
+        const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        // --- [IndexedDB Helper] ---
+        const DB_NAME = 'AnkiTurboDB_v1';
+        const STORE_RESULTS = 'results';
+
+        const dbPromise = new Promise((resolve, reject) => {
+            const req = indexedDB.open(DB_NAME, 1);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(STORE_RESULTS)) db.createObjectStore(STORE_RESULTS);
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+
+        const idbSave = async (key, val) => {
+            const db = await dbPromise;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_RESULTS, 'readwrite');
+                tx.objectStore(STORE_RESULTS).put(val, key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        };
+
+        const idbLoad = async (key) => {
+            const db = await dbPromise;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_RESULTS, 'readonly');
+                const req = tx.objectStore(STORE_RESULTS).get(key);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        };
+        // -------------------------
+
+        class ErrorBoundary extends Component {
+            constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+            static getDerivedStateFromError(error) { return { hasError: true, error }; }
+            componentDidCatch(error, errorInfo) {
+                if (error.message && error.message.includes('ResizeObserver')) {
+                    this.setState({ hasError: false, error: null });
+                    return;
+                }
+                console.error("Non-fatal Error:", error);
+            }
+            render() {
+                if (this.state.hasError) {
+                    return (
+                        <div className="relative">
+                            {this.props.children}
+                            <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center backdrop-blur-sm animate-fadeIn">
+                                <div className="bg-white p-8 rounded-2xl shadow-2xl text-center max-w-md border-4 border-rose-500">
+                                    <h2 className="text-2xl font-black text-rose-600 mb-2">⚠️ 시스템 일시 정지</h2>
+                                    <p className="text-slate-600 mb-6 font-bold text-sm">오류가 발생했습니다.<br />데이터는 안전합니다.</p>
+                                    <button onClick={() => this.setState({ hasError: false })} className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-bold hover:scale-105 transition-transform shadow-lg">작업 화면으로 복귀 (Resume)</button>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                }
+                return this.props.children;
+            }
+        }
+
+        const LucideIcon = memo(({ name, size = 16, className = "" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide && iconRef.current) {
+                    iconRef.current.innerHTML = `<i data-lucide="${name}"></i>`;
+                    window.lucide.createIcons({
+                        root: iconRef.current,
+                        name: name,
+                        attrs: { width: size, height: size, class: className }
+                    });
+                }
+            }, [name, size, className]);
+            return <span ref={iconRef} style={{ display: 'inline-flex' }}></span>;
+        });
+
+        // [NEW] 꾹 누르기 지원 버튼 컴포넌트
+        const HoldButton = memo(({ onAction, className, children, shiftMultiplier = 5 }) => {
+            const intervalRef = useRef(null);
+            const isHoldingRef = useRef(false);
+
+            const startHold = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const multiplier = e.shiftKey ? shiftMultiplier : 1;
+                onAction(multiplier);
+                isHoldingRef.current = true;
+
+                // 200ms 후부터 연속 실행 (초기 딜레이)
+                setTimeout(() => {
+                    if (!isHoldingRef.current) return;
+                    intervalRef.current = setInterval(() => {
+                        if (isHoldingRef.current) onAction(multiplier);
+                    }, 80); // 80ms 간격으로 연속 실행
+                }, 200);
+            };
+
+            const stopHold = (e) => {
+                e?.stopPropagation();
+                isHoldingRef.current = false;
+                if (intervalRef.current) {
+                    clearInterval(intervalRef.current);
+                    intervalRef.current = null;
+                }
+            };
+
+            useEffect(() => {
+                // 마우스가 윈도우 밖으로 나가도 정지
+                window.addEventListener('mouseup', stopHold);
+                window.addEventListener('mouseleave', stopHold);
+                return () => {
+                    window.removeEventListener('mouseup', stopHold);
+                    window.removeEventListener('mouseleave', stopHold);
+                    if (intervalRef.current) clearInterval(intervalRef.current);
+                };
+            }, []);
+
+            return (
+                <button
+                    className={className}
+                    onMouseDown={startHold}
+                    onMouseUp={stopHold}
+                    onMouseLeave={stopHold}
+                    onTouchStart={startHold}
+                    onTouchEnd={stopHold}
+                >
+                    {children}
+                </button>
+            );
+        });
+
+        const ResultItem = memo(({ item, pageNum, isSelected, isEditing, isLoading, tempImg, onToggleSelect, onStartEdit, onUpdateBbox, onEndEdit, onDelete, onPreview }) => {
+            const displayImg = (isEditing && tempImg) ? tempImg : item.img;
+            const isHighResLoading = item.isHighResLoading;
+
+            return (
+                <div onClick={() => onToggleSelect(item.fName)} className={`p-3 rounded-2xl border flex flex-col gap-2 shadow-sm hover:shadow-md transition-all relative cursor-pointer ${isSelected ? 'ring-2 ring-indigo-500 bg-indigo-50' : (item.type === 'question' ? 'bg-white border-indigo-100' : 'bg-slate-100 border-slate-200')}`}>
+                    {isLoading && (
+                        <div className="absolute inset-0 z-50 bg-white/60 backdrop-blur-[2px] flex flex-col items-center justify-center rounded-2xl animate-fadeIn">
+                            <LucideIcon name="loader-2" size={32} className="text-indigo-600 animate-spin mb-2" />
+                            <span className="text-[10px] font-bold text-indigo-900">로딩 중...</span>
+                        </div>
+                    )}
+
+                    {isHighResLoading && (
+                        <div className="absolute top-2 right-2 z-20 bg-indigo-600/90 text-white text-[9px] px-2 py-1 rounded-full flex items-center gap-1 animate-pulse shadow-lg">
+                            <LucideIcon name="wand-2" size={10} className="animate-spin" /> 고화질 변환
+                        </div>
+                    )}
+
+                    <div className="flex justify-between items-center">
+                        <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded ${item.type === 'question' ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-200 text-slate-500'}`}>{item.type === 'question' ? `Q.${item.number}` : `SOL.${item.number}`}</span>
+                        {/* 챕터명 가림 현상 해결을 위해 버튼 이동 후 너비 확장 */}
+                        <span className="text-[9px] text-slate-500 font-bold truncate max-w-[180px] text-right" title={item.chapter}>{item.chapter}</span>
+                    </div>
+
+                    <div className="h-64 w-full rounded-xl border border-slate-300 overflow-hidden cursor-zoom-in relative group flex items-center justify-center bg-slate-200/60" onClick={(e) => { e.stopPropagation(); onPreview(displayImg); }} title="클릭하여 확대">
+                        {/* 버튼을 이미지 영역 내부 우상단으로 이동 (텍스트 안 가리게) */}
+                        {!isEditing && (
+                            <div className="absolute top-2 right-2 z-20 flex gap-1 opacity-100 transition-opacity">
+                                <button onClick={(e) => { e.stopPropagation(); onStartEdit(pageNum, item.originalItemIndex, item.bbox); }} className="bg-white/90 p-1.5 rounded-full hover:bg-indigo-500 hover:text-white transition shadow-md border border-slate-200 backdrop-blur-sm" title="자르기 수정"><LucideIcon name="scissors" size={14} /></button>
+                                <button onClick={(e) => { e.stopPropagation(); onDelete(pageNum, item.originalItemIndex); }} className="bg-white/90 p-1.5 rounded-full hover:bg-rose-500 hover:text-white transition shadow-md border border-slate-200 backdrop-blur-sm" title="삭제"><LucideIcon name="trash-2" size={14} /></button>
+                            </div>
+                        )}
+
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 z-10 pointer-events-none"><LucideIcon name="zoom-in" className="text-white drop-shadow-md" size={24} /></div>
+                        <img src={displayImg} className="max-w-full max-h-full object-contain shadow-lg bg-white" />
+                    </div>
+
+                    {isEditing && (
+                        <div className="absolute inset-0 z-20 flex flex-col justify-between p-1 pointer-events-none bg-black/5 rounded-2xl" onClick={(e) => e.stopPropagation()}>
+                            <div className="w-full flex justify-center gap-1 pointer-events-auto">
+                                <HoldButton onAction={(mult) => onUpdateBbox('top', 10 * mult)} className="bg-slate-800/80 hover:bg-slate-700 text-white px-2 py-1 rounded text-[10px]" shiftMultiplier={5}>⬆️+</HoldButton>
+                                <HoldButton onAction={(mult) => onUpdateBbox('top', -5 * mult)} className="bg-slate-800/80 hover:bg-slate-700 text-white px-2 py-1 rounded text-[10px]" shiftMultiplier={5}>⬆️-</HoldButton>
+                            </div>
+                            <div className="flex w-full justify-between flex-1 items-center px-1 pointer-events-auto">
+                                <div className="flex flex-col gap-1">
+                                    <HoldButton onAction={(mult) => onUpdateBbox('left', 10 * mult)} className="bg-slate-800/80 hover:bg-slate-700 text-white px-2 py-1 rounded text-[10px]" shiftMultiplier={5}>⬅️+</HoldButton>
+                                    <HoldButton onAction={(mult) => onUpdateBbox('left', -5 * mult)} className="bg-slate-800/80 hover:bg-slate-700 text-white px-2 py-1 rounded text-[10px]" shiftMultiplier={5}>⬅️-</HoldButton>
+                                </div>
+                                <button onClick={(e) => { e.stopPropagation(); onEndEdit(); }} className="bg-indigo-600/90 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-full text-[10px] font-bold shadow-lg pointer-events-auto">완료</button>
+                                <div className="flex flex-col gap-1">
+                                    <HoldButton onAction={(mult) => onUpdateBbox('right', 10 * mult)} className="bg-slate-800/80 hover:bg-slate-700 text-white px-2 py-1 rounded text-[10px]" shiftMultiplier={5}>➡️+</HoldButton>
+                                    <HoldButton onAction={(mult) => onUpdateBbox('right', -5 * mult)} className="bg-slate-800/80 hover:bg-slate-700 text-white px-2 py-1 rounded text-[10px]" shiftMultiplier={5}>➡️-</HoldButton>
+                                </div>
+                            </div>
+                            <div className="w-full flex justify-center gap-1 pointer-events-auto">
+                                <HoldButton onAction={(mult) => onUpdateBbox('bottom', 10 * mult)} className="bg-slate-800/80 hover:bg-slate-700 text-white px-2 py-1 rounded text-[10px]" shiftMultiplier={5}>⬇️+</HoldButton>
+                                <HoldButton onAction={(mult) => onUpdateBbox('bottom', -5 * mult)} className="bg-slate-800/80 hover:bg-slate-700 text-white px-2 py-1 rounded text-[10px]" shiftMultiplier={5}>⬇️-</HoldButton>
+                            </div>
+                        </div>
+                    )}
+
+                    {isSelected && <div className="absolute top-2 left-2 text-indigo-500"><LucideIcon name="check-circle" size={20} className="fill-white" /></div>}
+                </div>
+            );
+        }, (prev, next) => {
+            const pb = prev.item.bbox || [];
+            const nb = next.item.bbox || [];
+            const isBboxSame = pb.length === nb.length && pb[0] === nb[0] && pb[1] === nb[1] && pb[2] === nb[2] && pb[3] === nb[3];
+
+            const isContentSame =
+                prev.item.fName === next.item.fName &&
+                prev.item.img === next.item.img &&
+                prev.tempImg === next.tempImg &&
+                prev.item.isHighResLoading === next.item.isHighResLoading &&
+                prev.isLoading === next.isLoading &&
+                isBboxSame;
+
+            return isContentSame && prev.isSelected === next.isSelected && prev.isEditing === next.isEditing;
+        });
+
+        const PROVIDER_TYPES = [
+            { id: 'gemini', name: 'Google Gemini', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta/models/', defaultModel: '' },
+            { id: 'openai_official', name: 'OpenAI (Official)', defaultUrl: 'https://api.openai.com/v1/chat/completions', defaultModel: '' },
+            { id: 'openai_compat', name: 'OpenAI Compatible (OpenRouter/DeepSeek)', defaultUrl: 'https://openrouter.ai/api/v1/chat/completions', defaultModel: '' },
+            { id: 'anthropic', name: 'Anthropic Claude', defaultUrl: 'https://api.anthropic.com/v1/messages', defaultModel: '' }
+        ];
+
+        // 다국어 지원 시스템
+        const TRANSLATIONS = {
+            ko: {
+                title: 'ANKI MCQ CUTTER',
+                aiEngine: 'AI 엔진',
+                profile: '프로필',
+                provider: 'Provider',
+                model: '모델',
+                baseUrl: 'Base URL (Optional)',
+                apiKeys: 'API Keys',
+                addKey: '+추가',
+                save: '저장',
+                export1: '1개 내보내기',
+                delete: '삭제',
+                newSetting: '+ 새 설정',
+                prompt: '프롬프트',
+                saveAsNew: '새 이름 저장',
+                newPrompt: '+ 신규',
+                commonSettings: '공통 설정',
+                batchSize: 'Batch Size',
+                concurrent: '동시 처리',
+                resultDpi: '화질 설정 (Result DPI)',
+                pdfDpi: 'PDF 분석 DPI(서버)',
+                temperature: 'Temperature',
+                dpiRecommend: '권장: 100~144',
+                tempRange: '0.0 (정확) ~ 2.0 (창의)',
+                padding: '여백 (Padding)',
+                log: 'Log',
+                clear: 'Clear',
+                pageGallery: 'PAGE GALLERY',
+                selectAll: '전체선택',
+                deselect: '해제',
+                deleteSelected: '선택삭제',
+                uploadPdf: 'PDF 업로드',
+                result: 'RESULT',
+                search: '단원명, 번호 검색...',
+                found: '개 발견',
+                reset: '초기화',
+                fields: '필드',
+                zipDownload: 'ZIP 다운로드',
+                serverOn: 'Server ON',
+                serverOff: 'Server OFF',
+                saving: '저장 중...',
+                saveFailed: '저장 실패',
+                autoSaved: '자동 저장됨',
+                systemProtectOn: '시스템 보호 (ON)',
+                systemProtectOff: '시스템 보호 (OFF)',
+                batchCheck: 'Batch 결과 확인',
+                batchSend: 'Batch API 전송',
+                stop: '중단',
+                continueFrom: '이어서 시작',
+                startRealtime: '실시간 시작',
+                tips: 'Tips: 탭을 분리해서 띄워두면 멈추지 않습니다.',
+                uploadPdfHere: 'PDF를 업로드하세요. (서버 처리)',
+                converting: '페이지 변환 중... (백그라운드 실행 중)',
+                completed: '완료됨',
+                rerun: '재실행',
+                prev: '이전',
+                next: '다음',
+                noResults: '결과가 여기에 표시됩니다.',
+                noSearchResults: '검색 결과가 없습니다.',
+                loading: '로딩 중...',
+                highRes: '고화질 변환',
+                done: '완료',
+                fieldSettings: 'Anki 필드 설정',
+                questionImg: '문제 이미지',
+                solutionImg: '해설 이미지',
+                chapterTag: '단원/태그',
+                language: '언어',
+                alias: '별칭',
+                regex: '정규식',
+                regexSettings: '챕터 그룹화 정규식',
+                regexDesc: 'AI가 추출한 챕터명을 그룹화하는 정규식 패턴입니다. 캡처 그룹 ()을 사용하면 해당 부분만 추출됩니다.',
+                regexName: '패턴 이름',
+                regexPattern: '정규식 패턴',
+                addRegex: '+ 정규식 추가',
+                customField: '커스텀 텍스트',
+                defaultValue: '기본값 (생략 가능)',
+                fieldType: '필드 타입',
+                addField: '필드 추가',
+                resetDefault: '기본값으로 초기화',
+                fieldModalTitle: 'Anki 필드 설정',
+                fieldModalDesc: 'ZIP 다운로드 시 생성될 Anki 필드를 설정합니다. 필드 순서대로 탭으로 구분된 텍스트가 생성됩니다.',
+                newField: '새 필드'
+            },
+            en: {
+                title: 'ANKI MCQ CUTTER',
+                aiEngine: 'AI Engine',
+                profile: 'Profile',
+                provider: 'Provider',
+                model: 'Model',
+                baseUrl: 'Base URL (Optional)',
+                apiKeys: 'API Keys',
+                addKey: '+Add',
+                save: 'Save',
+                export1: 'Export 1',
+                delete: 'Delete',
+                newSetting: '+ New Setting',
+                prompt: 'Prompt',
+                saveAsNew: 'Save As New',
+                newPrompt: '+ New',
+                commonSettings: 'Common Settings',
+                batchSize: 'Batch Size',
+                concurrent: 'Concurrent',
+                resultDpi: 'Result DPI',
+                pdfDpi: 'PDF Analysis DPI (Server)',
+                temperature: 'Temperature',
+                dpiRecommend: 'Recommended: 100~144',
+                tempRange: '0.0 (Accurate) ~ 2.0 (Creative)',
+                padding: 'Padding',
+                log: 'Log',
+                clear: 'Clear',
+                pageGallery: 'PAGE GALLERY',
+                selectAll: 'Select All',
+                deselect: 'Deselect',
+                deleteSelected: 'Delete Selected',
+                uploadPdf: 'Upload PDF',
+                result: 'RESULT',
+                search: 'Search chapter, number...',
+                found: ' found',
+                reset: 'Reset',
+                fields: 'Fields',
+                zipDownload: 'ZIP Download',
+                serverOn: 'Server ON',
+                serverOff: 'Server OFF',
+                saving: 'Saving...',
+                saveFailed: 'Save Failed',
+                autoSaved: 'Auto Saved',
+                systemProtectOn: 'System Protect (ON)',
+                systemProtectOff: 'System Protect (OFF)',
+                batchCheck: 'Check Batch Result',
+                batchSend: 'Send Batch API',
+                stop: 'Stop',
+                continueFrom: 'Continue From',
+                startRealtime: 'Start Realtime',
+                tips: 'Tips: Detaching the tab prevents sleeping.',
+                uploadPdfHere: 'Upload PDF here. (Server Processing)',
+                converting: 'Converting pages... (Background running)',
+                completed: 'Completed',
+                rerun: 'Rerun',
+                prev: 'Prev',
+                next: 'Next',
+                noResults: 'Results will appear here.',
+                noSearchResults: 'No search results.',
+                loading: 'Loading...',
+                highRes: 'High-Res Converting',
+                done: 'Done',
+                fieldSettings: 'Anki Field Settings',
+                questionImg: 'Question Image',
+                solutionImg: 'Solution Image',
+                chapterTag: 'Chapter/Tag',
+                language: 'Language',
+                alias: 'Alias',
+                regex: 'Regex',
+                regexSettings: 'Chapter Grouping Regex',
+                regexDesc: 'Regex patterns to group chapter names extracted by AI. Use capture groups () to extract specific parts.',
+                regexName: 'Pattern Name',
+                regexPattern: 'Regex Pattern',
+                addRegex: '+ Add Regex',
+                customField: 'Custom Text',
+                defaultValue: 'Default (optional)',
+                fieldType: 'Field Type',
+                addField: 'Add Field',
+                resetDefault: 'Reset to Default',
+                fieldModalTitle: 'Anki Field Settings',
+                fieldModalDesc: 'Configure Anki fields for ZIP download. Fields are generated as tab-separated text in order.',
+                newField: 'New Field'
+            },
+            zh: {
+                title: 'ANKI MCQ CUTTER',
+                aiEngine: 'AI 引擎',
+                profile: '配置文件',
+                provider: '提供商',
+                model: '模型',
+                baseUrl: 'Base URL (可选)',
+                apiKeys: 'API 密钥',
+                addKey: '+添加',
+                save: '保存',
+                export1: '导出1个',
+                delete: '删除',
+                newSetting: '+ 新设置',
+                prompt: '提示词',
+                saveAsNew: '另存为新',
+                newPrompt: '+ 新建',
+                commonSettings: '通用设置',
+                batchSize: '批量大小',
+                concurrent: '并发数',
+                resultDpi: '结果 DPI',
+                pdfDpi: 'PDF分析DPI(服务器)',
+                temperature: '温度',
+                dpiRecommend: '推荐: 100~144',
+                tempRange: '0.0 (精确) ~ 2.0 (创意)',
+                padding: '边距',
+                log: '日志',
+                clear: '清除',
+                pageGallery: '页面画廊',
+                selectAll: '全选',
+                deselect: '取消选择',
+                deleteSelected: '删除选中',
+                uploadPdf: '上传PDF',
+                result: '结果',
+                search: '搜索章节、编号...',
+                found: '个找到',
+                reset: '重置',
+                fields: '字段',
+                zipDownload: 'ZIP 下载',
+                serverOn: '服务器 开',
+                serverOff: '服务器 关',
+                saving: '保存中...',
+                saveFailed: '保存失败',
+                autoSaved: '自动保存',
+                systemProtectOn: '系统保护 (开)',
+                systemProtectOff: '系统保护 (关)',
+                batchCheck: '检查批处理结果',
+                batchSend: '发送批处理API',
+                stop: '停止',
+                continueFrom: '继续从',
+                startRealtime: '开始实时',
+                tips: '提示: 分离标签页可以防止休眠。',
+                uploadPdfHere: '在此上传PDF。(服务器处理)',
+                converting: '页面转换中... (后台运行)',
+                completed: '已完成',
+                rerun: '重新运行',
+                prev: '上一页',
+                next: '下一页',
+                noResults: '结果将在此显示。',
+                noSearchResults: '没有搜索结果。',
+                loading: '加载中...',
+                highRes: '高清转换',
+                done: '完成',
+                fieldSettings: 'Anki 字段设置',
+                questionImg: '问题图片',
+                solutionImg: '解答图片',
+                chapterTag: '章节/标签',
+                language: '语言',
+                alias: '别名',
+                regex: '正则',
+                regexSettings: '章节分组正则',
+                regexDesc: 'AI提取的章节名分组正则表达式。使用捕获组()提取特定部分。',
+                regexName: '模式名称',
+                regexPattern: '正则表达式',
+                addRegex: '+ 添加正则',
+                customField: '自定义文本',
+                defaultValue: '默认值（可选）',
+                fieldType: '字段类型',
+                addField: '添加字段',
+                resetDefault: '重置为默认',
+                fieldModalTitle: 'Anki 字段设置',
+                fieldModalDesc: '配置ZIP下载时生成的Anki字段。字段按顺序以制表符分隔。',
+                newField: '新字段'
+            }
+        };
+
+        const DEFAULT_PROMPT_CONTENT = `You are an expert AI in exam paper and textbook layout analysis.
+Precisely analyze the provided image to identify Multiple Choice Questions (Question) and Solutions (Solution) areas, and return them according to the rules and JSON Schema below.
+
+[Analysis Guidelines]
+1. **Question Area Definition**:
+   - Identify all areas starting with a question number (e.g., 1, 2, 01, Q1).
+   - **Mandatory Inclusions**: You must group the question number, the question text (stem), the choices (options), and **all visual materials (images, charts, graphs, code boxes, etc.)** required to solve the problem into a single 'question' block.
+   - Even if the components of a problem are separated (e.g., an image below the text), include them in the same area if they logically belong to one problem.
+
+2. **Solution Area Definition**:
+   - Look for areas marked with 'Answer', 'Solution', 'Explanation', 'Guidance', or similar keywords.
+   - Define the solution area corresponding 1:1 to a question number as a 'solution' block.
+   - Treat areas containing only the correct answer number as 'solution' as well.
+
+3. **Header (Chapter/Tag) Extraction**:
+   - Find the chapter name (e.g., "Chapter 1 Introduction", "PART 5", "Section 3") at the top, bottom, or side of the page and extract it as text in the 'header_text' field.
+   - If not present, use the nearest parent title or leave it as an empty string.
+
+4. **BBox (Bounding Box) Coordinates**:
+   - Return normalized coordinates [ymin, xmin, ymax, xmax] from the top-left (0,0) to the bottom-right (1000,1000) of the image.
+   - Capture the area generously so that no text or images are cut off.
+
+[JSON Schema]
+{
+  "pages": [
+    {
+      "items": [
+        {
+          "type": "question" | "solution",
+          "number": "Question Number (Numeric string, e.g., '1')",
+          "header_text": "Extracted Chapter Name or Title",
+          "bbox": [ymin, xmin, ymax, xmax]
+        }
+      ]
+    }
+  ]
+}`;
+
+        const normalizeApiKeys = (keys) => {
+            if (!Array.isArray(keys)) return [{ key: '', name: '' }];
+            return keys.map(k => (typeof k === 'string' ? { key: k, name: '' } : k));
+        };
+
+        const App = () => {
+            const [serverStatus, setServerStatus] = useState(false);
+            const [paddings, setPaddings] = useState({ top: 10, bottom: 10, left: 10, right: 10 });
+            const [batchSize, setBatchSize] = useState(1);
+            const [concurrency, setConcurrency] = useState(3);
+
+            // [NEW] 커스텀 Anki 필드 설정
+            const DEFAULT_ANKI_FIELDS = [
+                { id: 'question_img', name: '문제 이미지', type: 'question', enabled: true, isImage: true },
+                { id: 'solution_img', name: '해설 이미지', type: 'solution', enabled: true, isImage: true },
+                { id: 'chapter', name: '단원/태그', type: 'tag', enabled: true, isImage: false }
+            ];
+            const [ankiFields, setAnkiFields] = useState(() => {
+                const saved = localStorage.getItem('anki_fields');
+                return saved ? JSON.parse(saved) : DEFAULT_ANKI_FIELDS;
+            });
+            const [showFieldsModal, setShowFieldsModal] = useState(false);
+            const [targetDpi, setTargetDpi] = useState(300);
+
+            // [NEW] 사용자 정의 정규식 설정 (챕터명 그룹화용)
+            const DEFAULT_REGEX_PATTERNS = [];
+            const [regexPatterns, setRegexPatterns] = useState(() => {
+                const saved = localStorage.getItem('regex_patterns');
+                return saved ? JSON.parse(saved) : DEFAULT_REGEX_PATTERNS;
+            });
+            const [showRegexModal, setShowRegexModal] = useState(false);
+            useEffect(() => { localStorage.setItem('regex_patterns', JSON.stringify(regexPatterns)); }, [regexPatterns]);
+
+            // 언어 설정
+            const [language, setLanguage] = useState(() => {
+                const saved = localStorage.getItem('app_language');
+                return saved || 'ko';
+            });
+            const t = TRANSLATIONS[language] || TRANSLATIONS.ko;
+            useEffect(() => { localStorage.setItem('app_language', language); }, [language]);
+
+            const [aiProfiles, setAiProfiles] = useState(() => JSON.parse(localStorage.getItem('ai_profiles') || '[]'));
+            const [currentAiConfig, setCurrentAiConfig] = useState(() => {
+                const saved = localStorage.getItem('last_used_config');
+                return saved ? JSON.parse(saved) : {
+                    id: 'temp', name: '현재 설정',
+                    providerType: 'gemini', model: 'gemini-2.0-flash-exp',
+                    baseUrl: PROVIDER_TYPES[0].defaultUrl,
+                    apiKeys: [{ key: '', name: '' }]
+                };
+            });
+
+            const [promptProfiles, setPromptProfiles] = useState(() => JSON.parse(localStorage.getItem('prompt_profiles') || `[{"id":"default","name":"기본 프롬프트","content":${JSON.stringify(DEFAULT_PROMPT_CONTENT)}}]`));
+            const [currentPrompt, setCurrentPrompt] = useState(() => {
+                const saved = localStorage.getItem('last_used_prompt');
+                return saved ? JSON.parse(saved) : promptProfiles[0];
+            });
+
+            // [NEW] Temperature (0.0 - 2.0)
+            const [aiTemperature, setAiTemperature] = useState(() => {
+                const saved = localStorage.getItem('ai_temperature');
+                return saved ? parseFloat(saved) : 0.0;
+            });
+
+            // [NEW] PDF DPI (72 - 300)
+            const [pdfDpi, setPdfDpi] = useState(() => {
+                const saved = localStorage.getItem('pdf_dpi');
+                return saved ? parseInt(saved, 10) : 72;
+            });
+
+            useEffect(() => { localStorage.setItem('ai_temperature', aiTemperature); }, [aiTemperature]);
+            useEffect(() => { localStorage.setItem('pdf_dpi', pdfDpi); }, [pdfDpi]);
+
+            const [pages, setPages] = useState([]);
+            const [selectedIds, setSelectedIds] = useState(new Set());
+            const [results, setResults] = useState([]);
+            const [isRestoring, setIsRestoring] = useState(true);
+            const [saveStatus, setSaveStatus] = useState('saved');
+
+            const [resultPage, setResultPage] = useState(0);
+            const [tempPageInput, setTempPageInput] = useState("1");
+            const [searchTerm, setSearchTerm] = useState("");
+
+            const filteredResults = useMemo(() => {
+                if (!searchTerm.trim()) return results;
+                const lower = searchTerm.toLowerCase();
+                return results.map(page => {
+                    const matchingItems = page.items.filter(it =>
+                        (it.chapter && it.chapter.toLowerCase().includes(lower)) ||
+                        (it.number && String(it.number).includes(lower))
+                    );
+                    if (matchingItems.length > 0) return { ...page, items: matchingItems };
+                    return null;
+                }).filter(Boolean);
+            }, [results, searchTerm]);
+
+            useEffect(() => setResultPage(0), [searchTerm]);
+            useEffect(() => { setTempPageInput(String(resultPage + 1)); }, [resultPage]);
+            const applyPageInput = () => {
+                const val = parseInt(tempPageInput, 10);
+                if (!isNaN(val) && val >= 1 && val <= Math.ceil(filteredResults.length / ITEMS_PER_PAGE)) {
+                    setResultPage(val - 1);
+                } else {
+                    setTempPageInput(String(resultPage + 1));
+                }
+            };
+            const ITEMS_PER_PAGE = 5;
+            const resultLoaderRef = useRef(null);
+            const [selectedResultIds, setSelectedResultIds] = useState(new Set());
+
+            const userEditsRef = useRef(JSON.parse(localStorage.getItem('user_edits') || '{}'));
+            const deletedItemsRef = useRef(new Set(JSON.parse(localStorage.getItem('deleted_items') || '[]')));
+
+            const [logs, setLogs] = useState([]);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [isLoadingPdf, setIsLoadingPdf] = useState(false);
+            const [previewImg, setPreviewImg] = useState(null);
+            const [isZoomed, setIsZoomed] = useState(false);
+            const [retryingPage, setRetryingPage] = useState(null);
+
+            const [editingItem, setEditingItem] = useState(null);
+            const [loadingEditId, setLoadingEditId] = useState(null);
+
+            const editBboxRef = useRef(null);
+            const editingImageObjRef = useRef(null);
+
+            const [batchId, setBatchId] = useState(localStorage.getItem('last_batch_id') || null);
+            const [scrollTop, setScrollTop] = useState(0);
+            const [containerWidth, setContainerWidth] = useState(0);
+            const [guardActive, setGuardActive] = useState(false);
+
+            const [pdfJobId, setPdfJobId] = useState(localStorage.getItem('last_pdf_job_id'));
+            const [pdfProcessedCount, setPdfProcessedCount] = useState(0);
+
+            const galleryContainerRef = useRef(null);
+            const lastKeyIdxRef = useRef(0);
+            const stopRef = useRef(false);
+            const abortControllerRef = useRef(null);
+            const aiFileRef = useRef(null);
+            const promptFileRef = useRef(null);
+
+            const workerRef = useRef(null);
+            const audioCtxRef = useRef(null);
+            const scriptNodeRef = useRef(null);
+            const wakeLockRef = useRef(null);
+            const [pingCount, setPingCount] = useState(0);
+            const [tempPdfCount, setTempPdfCount] = useState(0);
+
+            const processedPageNums = useMemo(() => new Set(results.map(r => r.pageNum)), [results]);
+
+            const log = (msg) => setLogs(prev => [...prev.slice(-50), `${new Date().toLocaleTimeString()}: ${msg}`]);
+
+            useEffect(() => {
+                const restoreData = async () => {
+                    try {
+                        const legacyData = localStorage.getItem('auto_saved_results');
+                        if (legacyData) {
+                            const parsed = JSON.parse(legacyData);
+                            if (parsed.length > 0) {
+                                await idbSave('results', parsed);
+                                localStorage.removeItem('auto_saved_results');
+                            }
+                        }
+                        const savedResults = await idbLoad('results');
+                        if (savedResults && Array.isArray(savedResults)) {
+                            setResults(savedResults);
+                            log(`📂 지난 작업 복구 완료 (${savedResults.length} 페이지)`);
+                        }
+                        const savedEdits = await idbLoad('user_edits');
+                        if (savedEdits) userEditsRef.current = savedEdits;
+                        const savedDeleted = await idbLoad('deleted_items');
+                        if (savedDeleted) deletedItemsRef.current = new Set(savedDeleted);
+                    } catch (e) { console.error("Restore failed:", e); }
+                    finally { setIsRestoring(false); }
+                };
+                restoreData();
+            }, []);
+
+            useEffect(() => {
+                if (isRestoring) return;
+                const save = async () => {
+                    setSaveStatus('saving');
+                    try { await idbSave('results', results); setSaveStatus('saved'); }
+                    catch (e) { console.error("Save failed", e); setSaveStatus('error'); }
+                };
+                const timeout = setTimeout(save, 30000);
+                return () => clearTimeout(timeout);
+            }, [results]);
+
+            const saveEdits = async () => {
+                await idbSave('user_edits', userEditsRef.current);
+                await idbSave('deleted_items', [...deletedItemsRef.current]);
+            };
+
+            useEffect(() => {
+                if (!resultLoaderRef.current) return;
+            }, [resultPage]);
+
+            useEffect(() => {
+                const checkServer = async () => {
+                    try {
+                        const res = await fetch('http://localhost:8000/');
+                        if (res.ok) {
+                            setServerStatus(true);
+                            // temp_pdfs 개수도 함께 체크
+                            const countRes = await fetch('http://localhost:8000/temp_pdf_count');
+                            if (countRes.ok) {
+                                const data = await countRes.json();
+                                setTempPdfCount(data.count || 0);
+                            }
+                        }
+                        else setServerStatus(false);
+                    } catch (e) { setServerStatus(false); }
+                };
+                checkServer();
+                const interval = setInterval(checkServer, 5000);
+                return () => clearInterval(interval);
+            }, []);
+
+            useEffect(() => { localStorage.setItem('ai_profiles', JSON.stringify(aiProfiles)); }, [aiProfiles]);
+            useEffect(() => { localStorage.setItem('prompt_profiles', JSON.stringify(promptProfiles)); }, [promptProfiles]);
+            useEffect(() => { localStorage.setItem('last_used_config', JSON.stringify(currentAiConfig)); }, [currentAiConfig]);
+            useEffect(() => { localStorage.setItem('last_used_prompt', JSON.stringify(currentPrompt)); }, [currentPrompt]);
+            useEffect(() => { localStorage.setItem('anki_fields', JSON.stringify(ankiFields)); }, [ankiFields]);
+
+            useEffect(() => {
+                const initAudioSystem = () => {
+                    if (!audioCtxRef.current) {
+                        const AudioContext = window.AudioContext || window.webkitAudioContext;
+                        if (AudioContext) {
+                            audioCtxRef.current = new AudioContext();
+                        }
+                    }
+                    if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+                        audioCtxRef.current.resume().catch(() => { });
+                    }
+                };
+                window.addEventListener('click', initAudioSystem, { once: true });
+                window.addEventListener('touchstart', initAudioSystem, { once: true });
+                return () => {
+                    window.removeEventListener('click', initAudioSystem);
+                    window.removeEventListener('touchstart', initAudioSystem);
+                };
+            }, []);
+
+            useEffect(() => {
+                const handleError = (e) => {
+                    if (e.message && e.message.includes('ResizeObserver')) {
+                        e.stopImmediatePropagation();
+                    }
+                };
+                window.addEventListener('error', handleError);
+                return () => window.removeEventListener('error', handleError);
+            }, []);
+
+            useEffect(() => {
+                const handleEsc = (e) => { if (e.key === 'Escape') { setPreviewImg(null); setIsZoomed(false); setEditingItem(null); } };
+                window.addEventListener('keydown', handleEsc);
+                let obs = null;
+                if (galleryContainerRef.current) {
+                    obs = new ResizeObserver(entries => { if (entries[0]) setContainerWidth(entries[0].contentRect.width); });
+                    obs.observe(galleryContainerRef.current);
+                }
+                return () => { window.removeEventListener('keydown', handleEsc); if (obs) obs.disconnect(); };
+            }, [galleryContainerRef.current]);
+
+            const toggleGuard = (forceOn = false) => {
+                const shouldActivate = forceOn || !guardActive;
+                if (!shouldActivate) {
+                    if (scriptNodeRef.current) { try { scriptNodeRef.current.disconnect(); } catch (e) { } scriptNodeRef.current = null; }
+                    if (workerRef.current) { workerRef.current.terminate(); workerRef.current = null; }
+                    if (wakeLockRef.current) { wakeLockRef.current.release().catch(() => { }); wakeLockRef.current = null; }
+                    setGuardActive(false); log("🔕 시스템 보호 해제");
+                } else {
+                    setGuardActive(true); log("🛡️ 시스템 보호 가동 (Worker Metronome Mode)");
+                    if (audioCtxRef.current) {
+                        if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
+                        if (!scriptNodeRef.current) {
+                            try {
+                                const processor = audioCtxRef.current.createScriptProcessor(4096, 1, 1);
+                                processor.onaudioprocess = (e) => { const output = e.outputBuffer.getChannelData(0); for (let i = 0; i < output.length; i++) { output[i] = (Math.random() * 0.002) - 0.001; } };
+                                processor.connect(audioCtxRef.current.destination); scriptNodeRef.current = processor;
+                            } catch (e) { console.warn("Audio fail", e); }
+                        }
+                    }
+                    try {
+                        if (!workerRef.current) {
+                            const blob = new Blob([`self.onmessage = function(e) { if (e.data === 'start') { setInterval(function() { self.postMessage('tick'); }, 250); } };`], { type: "application/javascript" });
+                            workerRef.current = new Worker(URL.createObjectURL(blob));
+                            workerRef.current.onmessage = (e) => { if (e.data === 'tick') { setPingCount(c => (c + 1) % 100); } };
+                            workerRef.current.postMessage('start');
+                        }
+                    } catch (e) { console.error("Worker fail", e); }
+                    if ('wakeLock' in navigator) navigator.wakeLock.request('screen').then(l => wakeLockRef.current = l).catch(() => { });
+                }
+            };
+
+            const gridConfig = useMemo(() => {
+                const safeWidth = containerWidth === 0 ? 1200 : containerWidth;
+                let cols = 3;
+                if (safeWidth >= 640) cols = 4; if (safeWidth >= 768) cols = 5; if (safeWidth >= 1280) cols = 6;
+                const gap = 16; const padding = 32;
+                const itemWidth = Math.max(10, (safeWidth - padding - (gap * (cols - 1))) / cols);
+                const itemHeight = itemWidth * (4 / 3);
+                return { cols, gap, itemHeight };
+            }, [containerWidth]);
+
+            const virtualItems = useMemo(() => {
+                if (!pages.length) return { items: [], totalHeight: 0 };
+                const { cols, gap, itemHeight } = gridConfig;
+                const totalRows = Math.ceil(pages.length / cols);
+                const totalHeight = totalRows * itemHeight + (totalRows - 1) * gap;
+                const buffer = 2; const startRow = Math.max(0, Math.floor(scrollTop / (itemHeight + gap)) - buffer); const endRow = Math.min(totalRows, Math.ceil((scrollTop + 500) / (itemHeight + gap)) + buffer);
+                const visibleItems = [];
+                for (let r = startRow; r < endRow; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        const idx = r * cols + c;
+                        if (idx < pages.length) {
+                            visibleItems.push({ ...pages[idx], originalIndex: idx, style: { position: 'absolute', top: r * (itemHeight + gap), left: c * ((containerWidth - 32 - (gap * (cols - 1))) / cols + gap) + 16, width: (containerWidth - 32 - (gap * (cols - 1))) / cols, height: itemHeight } });
+                        }
+                    }
+                }
+                return { items: visibleItems, totalHeight };
+            }, [pages, scrollTop, gridConfig, containerWidth]);
+
+            const loadAiProfile = (e) => { const id = e.target.value; if (id === 'new') { setCurrentAiConfig({ id: 'temp', name: '', providerType: 'gemini', model: '', baseUrl: '', apiKeys: [{ key: '', name: '' }] }); } else { const found = aiProfiles.find(p => p.id === id); if (found) setCurrentAiConfig({ ...found, apiKeys: normalizeApiKeys(found.apiKeys || (found.apiKey ? [found.apiKey] : [])) }); } };
+            const saveAiProfile = () => { const name = prompt("프로필 이름:", currentAiConfig.name); if (name) setAiProfiles(prev => [...prev.filter(p => p.id !== currentAiConfig.id), { ...currentAiConfig, id: `ai_${Date.now()}`, name }]); };
+            const deleteAiProfile = () => { if (confirm("삭제?")) setAiProfiles(prev => prev.filter(p => p.id !== currentAiConfig.id)); };
+            const exportAiProfiles = () => { const b = new Blob([JSON.stringify(aiProfiles, null, 2)], { type: "application/json" }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = "Profiles.json"; a.click(); };
+            const exportCurrentAiProfile = () => { if (currentAiConfig.id === 'temp') return alert('저장 후 내보내세요'); const b = new Blob([JSON.stringify([currentAiConfig], null, 2)], { type: "application/json" }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `Profile_${currentAiConfig.name}.json`; a.click(); };
+            const importAiProfiles = (e) => { const r = new FileReader(); r.onload = v => { try { const imported = JSON.parse(v.target.result); setAiProfiles(prev => { const merged = [...prev]; imported.forEach(p => { const idx = merged.findIndex(m => m.id === p.id); if (idx >= 0) merged[idx] = p; else merged.push(p); }); return merged; }); alert(`${imported.length}개 프로필 추가됨`); } catch (x) { alert('오류'); } }; if (e.target.files[0]) r.readAsText(e.target.files[0]); e.target.value = ''; };
+            const updateKey = (i, f, v) => { const k = [...currentAiConfig.apiKeys]; k[i] = { ...k[i], [f]: v }; setCurrentAiConfig({ ...currentAiConfig, apiKeys: k }); };
+            const addKey = () => setCurrentAiConfig({ ...currentAiConfig, apiKeys: [...currentAiConfig.apiKeys, { key: '', name: '' }] });
+            const removeKey = (i) => setCurrentAiConfig({ ...currentAiConfig, apiKeys: currentAiConfig.apiKeys.filter((_, x) => x !== i) });
+            const createNewPrompt = () => setCurrentPrompt({ id: `temp_${Date.now()}`, name: '새 프롬프트', content: DEFAULT_PROMPT_CONTENT });
+            const updateCurrentPrompt = () => { const exists = promptProfiles.find(p => p.id === currentPrompt.id); if (exists) { setPromptProfiles(prev => prev.map(p => p.id === currentPrompt.id ? currentPrompt : p)); alert('완료'); } else savePromptAsNew(); };
+            const savePromptAsNew = () => { const name = prompt("이름:", currentPrompt.name); if (name) { const n = { ...currentPrompt, id: `pmt_${Date.now()}`, name }; setPromptProfiles(prev => [...prev, n]); setCurrentPrompt(n); } };
+            const deletePromptProfile = () => { if (promptProfiles.length <= 1) return; if (confirm('삭제?')) { const n = promptProfiles.filter(p => p.id !== currentPrompt.id); setPromptProfiles(n); setCurrentPrompt(n[0]); } };
+            const exportPrompts = () => { const b = new Blob([JSON.stringify(promptProfiles, null, 2)], { type: "application/json" }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = "Prompts.json"; a.click(); };
+            const exportCurrentPrompt = () => { const b = new Blob([JSON.stringify([currentPrompt], null, 2)], { type: "application/json" }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `Prompt_${currentPrompt.name}.json`; a.click(); };
+            const importPrompts = (e) => { const r = new FileReader(); r.onload = v => { try { const imported = JSON.parse(v.target.result); setPromptProfiles(prev => { const merged = [...prev]; imported.forEach(p => { const idx = merged.findIndex(m => m.id === p.id); if (idx >= 0) merged[idx] = p; else merged.push(p); }); return merged; }); alert(`${imported.length}개 프롬프트 추가됨`); } catch (x) { alert('오류'); } }; if (e.target.files[0]) r.readAsText(e.target.files[0]); e.target.value = ''; };
+
+            const handlePdf = async (e) => {
+                const files = Array.from(e.target.files);
+                if (!files.length) return;
+                if (!serverStatus) return alert("서버 연결이 필요합니다. (server.py 실행 확인)");
+                // 시스템 보호 자동 활성화 제거 (수동 제어로 변경)
+
+                setIsLoadingPdf(true);
+                setPages([]);
+
+                if (results.length > 0) {
+                    if (confirm("기존 결과를 초기화하고 새로 시작하시겠습니까? (취소 시 기존 결과 유지)")) {
+                        setResults([]);
+                        userEditsRef.current = {};
+                        deletedItemsRef.current = new Set();
+                        await idbSave('results', []);
+                        await idbSave('user_edits', {});
+                        await idbSave('deleted_items', []);
+                    }
+                }
+
+                const file = files[0];
+                const formData = new FormData();
+                formData.append("file", file);
+                formData.append("dpi", pdfDpi); // [NEW] DPI 전송
+
+                try {
+                    log(`📤 ${file.name} 서버로 업로드 중...`);
+                    const res = await fetch("http://localhost:8000/upload_pdf", { method: "POST", body: formData });
+                    if (!res.ok) throw new Error("업로드 실패");
+                    const data = await res.json();
+                    setPdfJobId(data.job_id);
+
+                    localStorage.setItem('last_pdf_job_id', data.job_id);
+
+                    setPdfProcessedCount(0);
+                    log("✅ 업로드 완료! 서버에서 변환 중입니다.");
+                } catch (err) {
+                    log(`❌ 업로드 에러: ${err.message}`);
+                    setIsLoadingPdf(false);
+                }
+            };
+
+            useEffect(() => {
+                let interval = null;
+                if (pdfJobId && isLoadingPdf) {
+                    interval = setInterval(async () => {
+                        try {
+                            const res = await fetch(`http://localhost:8000/check_pdf_job/${pdfJobId}?last_index=${pdfProcessedCount}`);
+                            if (!res.ok) return;
+                            const data = await res.json();
+
+                            if (data.new_pages && data.new_pages.length > 0) {
+                                setPages(prev => {
+                                    const existingIds = new Set(prev.map(p => p.id));
+                                    const uniqueNewPages = data.new_pages.filter(p => !existingIds.has(p.id));
+                                    if (uniqueNewPages.length === 0) return prev;
+                                    return [...prev, ...uniqueNewPages];
+                                });
+                                setPdfProcessedCount(data.next_index);
+                                document.title = `PDF ${data.processed_count}/${data.total_pages}`;
+                            }
+
+                            if (data.status === "done") {
+                                setIsLoadingPdf(false);
+                                log("🎉 모든 페이지 로드 완료!");
+                                document.title = "Anki Turbo PRO";
+                            } else if (data.status === "failed") {
+                                setPdfJobId(null);
+                                setIsLoadingPdf(false);
+                                alert(`변환 실패: ${data.error}`);
+                            }
+                        } catch (e) { console.error("Polling error", e); }
+                    }, 1000);
+                }
+                return () => { if (interval) clearInterval(interval); };
+            }, [pdfJobId, pdfProcessedCount, isLoadingPdf]);
+
+            // [정리됨] AI 호출 함수: 서버를 통해서만 요청 (중복 코드 제거)
+            const callLLM = async (config, apiKeyData, prompt, images, signal) => {
+                console.log(`📡 AI 요청 시작: ${config.model} (이미지 ${images.length}장)`);
+
+                try {
+                    if (signal.aborted || stopRef.current) return null;
+
+                    if (!serverStatus) {
+                        throw new Error("서버가 연결되지 않았습니다. server.py를 실행해주세요.");
+                    }
+
+                    const host = "127.0.0.1:8000";
+                    const url = `http://${host}/process_single`;
+
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            api_key: apiKeyData.key,
+                            model: config.model,
+                            prompt: prompt,
+                            images: images,
+                            provider: config.providerType.startsWith('openai') ? 'openai' : config.providerType,
+                            base_url: config.baseUrl,
+                            temperature: aiTemperature // [NEW] Temperature 전송
+                        }),
+                        signal
+                    });
+
+                    if (!response.ok) {
+                        const errText = await response.text();
+                        console.error(`서버 응답 에러: ${errText}`);
+                        throw new Error(`Server Error: ${errText}`);
+                    }
+
+                    const jsonRes = await response.json();
+                    console.log("✅ AI 응답 수신 완료");
+                    return jsonRes;
+
+                } catch (e) {
+                    console.error("CallLLM Exception:", e);
+                    throw e;
+                }
+            };
+
+            // [FIXED] 가위질 함수: 보이는 그대로 정확하게 자르도록 수학적 정밀도 개선
+            const cutImageFromBase = (imgSource, bbox) => {
+                const [y1, x1, y2, x2] = bbox;
+                const cvs = document.createElement('canvas');
+                const ctx = cvs.getContext('2d');
+
+                const imgObj = (typeof imgSource === 'string') ? new Image() : imgSource;
+
+                const draw = () => {
+                    const baseW = imgObj.naturalWidth || imgObj.width;
+                    const baseH = imgObj.naturalHeight || imgObj.height;
+
+                    // 1000분율 좌표를 픽셀로 변환 (반올림하여 픽셀 경계 맞춤)
+                    let sX = Math.round((x1 / 1000) * baseW);
+                    let sY = Math.round((y1 / 1000) * baseH);
+                    let eX = Math.round((x2 / 1000) * baseW);
+                    let eY = Math.round((y2 / 1000) * baseH);
+
+                    // 범위 안전장치
+                    sX = Math.max(0, sX); sY = Math.max(0, sY);
+                    eX = Math.min(baseW, eX); eY = Math.min(baseH, eY);
+
+                    cvs.width = eX - sX;
+                    cvs.height = eY - sY;
+
+                    if (cvs.width > 0 && cvs.height > 0) {
+                        ctx.drawImage(imgObj, sX, sY, cvs.width, cvs.height, 0, 0, cvs.width, cvs.height);
+                        return cvs.toDataURL('image/webp', 0.9); // 화질 약간 높임
+                    }
+                    return null;
+                };
+
+                if (typeof imgSource === 'string') {
+                    return new Promise(resolve => {
+                        imgObj.onload = () => resolve(draw());
+                        imgObj.src = imgSource;
+                    });
+                } else {
+                    return draw();
+                }
+            };
+
+            // [FIXED] 배치 처리 지원: 여러 페이지를 한 번에 처리
+            const processBatchWorker = async (pageItems, config, apiKeyData, promptText, signal) => {
+                try {
+                    if (stopRef.current || signal.aborted) return null;
+
+                    // pageItems가 배열이 아니면 배열로 변환 (단일 페이지 호환)
+                    const pagesArray = Array.isArray(pageItems) ? pageItems : [pageItems];
+                    const highResImgs = [];
+                    const pageNums = [];
+
+                    // 각 페이지에서 이미지 추출
+                    for (const pageItem of pagesArray) {
+                        pageNums.push(pageItem.pageNum);
+                        if (pageItem.is_server_processed && pageItem.thumb) {
+                            highResImgs.push(pageItem.thumb);
+                        } else if (pageItem.pdfDoc) {
+                            const dpiScale = Math.max(0.5, targetDpi / 72);
+                            const pg = await pageItem.pdfDoc.getPage(pageItem.pageNum);
+                            const vp = pg.getViewport({ scale: dpiScale });
+                            const cvs = document.createElement('canvas');
+                            cvs.height = vp.height; cvs.width = vp.width;
+                            await pg.render({ canvasContext: cvs.getContext('2d'), viewport: vp }).promise;
+                            highResImgs.push(cvs.toDataURL('image/jpeg', 0.85));
+                        } else {
+                            console.warn(`이미지 소스 없음: p.${pageItem.pageNum}`);
+                            throw new Error("Image Source Not Found");
+                        }
+                    }
+
+                    // AI 호출 (여러 이미지 한 번에 전송)
+                    const data = await callLLM(config, apiKeyData, promptText, highResImgs, signal);
+                    if (stopRef.current || !data || !data.pages) return null;
+
+                    // 결과 처리: 각 페이지별로 분리하여 반환
+                    const allResults = [];
+                    const currentJobId = pdfJobId || localStorage.getItem("last_pdf_job_id");
+
+                    for (let pageIdx = 0; pageIdx < pagesArray.length; pageIdx++) {
+                        const pageItem = pagesArray[pageIdx];
+                        const pageData = data.pages[pageIdx];
+                        if (!pageData || !pageData.items || pageData.items.length === 0) continue;
+
+                        const rawItems = pageData.items;
+
+                        if (!currentJobId) {
+                            // Job ID 없으면 원본 좌표만 반환
+                            allResults.push({
+                                pageNum: pageItem.pageNum,
+                                items: rawItems.map((it, idx) => ({
+                                    ...it, img: pageItem.thumb, fName: `ITEM_${Date.now()}_${pageIdx}_${idx}.webp`
+                                }))
+                            });
+                            continue;
+                        }
+
+                        // 서버로 자르기 요청
+                        const cropPayload = {
+                            job_id: currentJobId,
+                            page_num: pageItem.pageNum,
+                            items: rawItems.map((it, idx) => {
+                                const [y1, x1, y2, x2] = it.bbox || [0, 0, 0, 0];
+                                const newBbox = [
+                                    Math.max(0, y1 - paddings.top),
+                                    Math.max(0, x1 - paddings.left),
+                                    Math.min(1000, y2 + paddings.bottom),
+                                    Math.min(1000, x2 + paddings.right)
+                                ];
+                                it.bbox = newBbox;
+                                return { id: `temp_${idx}`, bbox: newBbox };
+                            }),
+                            dpi: targetDpi
+                        };
+
+                        try {
+                            const cropRes = await fetch("http://127.0.0.1:8000/crop_batch_items", {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(cropPayload)
+                            });
+
+                            if (!cropRes.ok) throw new Error("Server Crop Failed");
+                            const cropData = await cropRes.json();
+
+                            const validItems = [];
+                            for (let i = 0; i < rawItems.length; i++) {
+                                const raw = rawItems[i];
+                                const serverImg = cropData.results[i];
+                                if (raw.type !== 'ignore') {
+                                    const finalImg = (serverImg && serverImg.img) ? serverImg.img : pageItem.thumb;
+                                    validItems.push({
+                                        ...raw,
+                                        img: finalImg,
+                                        raw_number: raw.number,
+                                        raw_chapter: raw.header_text,
+                                        fName: `ITEM_${Date.now()}_${pageIdx}_${i}.webp`
+                                    });
+                                }
+                            }
+                            if (validItems.length) allResults.push({ pageNum: pageItem.pageNum, items: validItems });
+                        } catch (cropErr) {
+                            console.error("Crop error for page", pageItem.pageNum, cropErr);
+                            // 자르기 실패해도 결과는 살림
+                            allResults.push({
+                                pageNum: pageItem.pageNum,
+                                items: rawItems.filter(it => it.type !== 'ignore').map((it, idx) => ({
+                                    ...it, img: pageItem.thumb, raw_number: it.number, raw_chapter: it.header_text,
+                                    fName: `ITEM_${Date.now()}_${pageIdx}_${idx}.webp`
+                                }))
+                            });
+                        }
+                    }
+
+                    return allResults.length > 0 ? allResults : null;
+
+                } catch (e) {
+                    if (e.message && (e.message.includes("429") || e.message.includes("Quota") || e.message.includes("Too Many Requests"))) return 'RATE_LIMIT';
+                    console.error("Worker Error:", e);
+                    return null;
+                }
+            };
+
+            const recalculateContext = (rawList) => {
+                if (!Array.isArray(rawList)) return [];
+                const sortedRaw = [...rawList].sort((a, b) => a.pageNum - b.pageNum);
+                let currentChapter = "Unknown_Chapter", currentQNum = "unknown";
+                return sortedRaw.map(pageRes => {
+                    if (!pageRes || !pageRes.items) return { ...pageRes, items: [] };
+                    const activeItems = pageRes.items.filter((_, itemIdx) => {
+                        const key = `${pageRes.pageNum}-${itemIdx}`;
+                        return !deletedItemsRef.current.has(key);
+                    });
+                    const newItems = activeItems.map((it) => {
+                        if (!it) return null;
+                        const originalIndex = pageRes.items.indexOf(it);
+                        if (it.raw_chapter && it.raw_chapter.length > 1) {
+                            // [개선됨] '편/장/강' 모두 지원 및 포맷 통일 ('제_1_편' -> '제1편 ')
+                            currentChapter = it.raw_chapter.trim()
+                                .replace(/^제[\s_]*(\d+)[\s_]*([편장강])[\s_]*/, '제$1$2 ')
+                                .trim().substring(0, 50);
+                        }
+                        let finalNum = it.raw_number;
+                        if (it.type === 'question' || (it.type === 'solution' && it.raw_number)) { if (it.raw_number) { currentQNum = it.raw_number; finalNum = it.raw_number; } }
+                        else if (it.type === 'solution_cont' || !it.raw_number || it.raw_number === 'cont') { finalNum = currentQNum; }
+
+                        const editKey = `${pageRes.pageNum}-${originalIndex}`;
+                        const userEdit = userEditsRef.current[editKey];
+                        let finalBbox = it.bbox; let finalImg = it.img;
+                        if (userEdit) { finalBbox = userEdit.bbox; finalImg = userEdit.img; }
+
+                        const itemId = it.fName || `item_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+                        return {
+                            ...it, bbox: finalBbox, img: finalImg, number: finalNum, chapter: currentChapter,
+                            fName: itemId,
+                            originalItemIndex: originalIndex
+                        };
+                    }).filter(Boolean);
+                    return { ...pageRes, items: newItems };
+                });
+            };
+
+            // [개선됨] 편집 시작 - 서버 요청 실패 시 기존 이미지를 fallback으로 사용
+            const startEditing = async (pageNum, itemIdx, currentBbox) => {
+                const uniqueKey = `${pageNum}-${itemIdx}`;
+                setLoadingEditId(uniqueKey);
+
+                try {
+                    let sourceImgUrl = "";
+
+                    // 1순위: 메모리에 있는 페이지 썸네일
+                    const pageInMem = pages.find(p => p.pageNum === pageNum);
+                    if (pageInMem && pageInMem.thumb) {
+                        sourceImgUrl = pageInMem.thumb;
+                    } else {
+                        // 2순위: 서버에서 페이지 이미지 요청
+                        const currentJobId = pdfJobId || localStorage.getItem('last_pdf_job_id');
+                        if (currentJobId) {
+                            try {
+                                const res = await fetch("http://127.0.0.1:8000/get_page_image", {
+                                    method: "POST", headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ job_id: currentJobId, page_num: pageNum, dpi: 100 })
+                                });
+                                if (res.ok) {
+                                    const data = await res.json();
+                                    sourceImgUrl = data.img;
+                                }
+                            } catch (e) {
+                                console.warn("서버 이미지 요청 실패, fallback 사용", e);
+                            }
+                        }
+                    }
+
+                    // 3순위: 결과 아이템의 기존 이미지 (fallback)
+                    if (!sourceImgUrl) {
+                        const pageResult = results.find(r => r.pageNum === pageNum);
+                        const item = pageResult?.items.find(it => it.originalItemIndex === itemIdx);
+                        if (item && item.img) {
+                            // 아이템 이미지 자체를 소스로 사용 (제한적이지만 편집 가능)
+                            sourceImgUrl = item.img;
+                            console.log("Fallback: 아이템 이미지를 소스로 사용");
+                        }
+                    }
+
+                    if (!sourceImgUrl) {
+                        throw new Error("이미지 소스를 찾을 수 없습니다. PDF를 다시 업로드해주세요.");
+                    }
+
+                    const highResImg = new Image();
+                    highResImg.src = sourceImgUrl;
+                    await highResImg.decode();
+
+                    editingImageObjRef.current = highResImg;
+                    editBboxRef.current = [...currentBbox];
+
+                    const highQualityCut = await cutImageFromBase(highResImg, currentBbox);
+
+                    setEditingItem({
+                        pageNum,
+                        itemIdx,
+                        baseImg: sourceImgUrl,
+                        tempImg: highQualityCut,
+                        bbox: [...currentBbox],
+                        isEditLoading: false
+                    });
+
+                } catch (e) {
+                    console.warn("편집 이미지 로드 실패", e);
+                    alert(e.message || "이미지 로드 중 오류가 발생했습니다.");
+                } finally {
+                    setLoadingEditId(null);
+                }
+            };
+
+            const updateEditBbox = useCallback(async (direction, amount) => {
+                if (!editingItem || !editBboxRef.current) return;
+
+                const newBbox = [...editBboxRef.current];
+                const step = amount === 10 ? 5 : amount;
+
+                if (direction === 'top') newBbox[0] = Math.max(0, newBbox[0] - step);
+                if (direction === 'bottom') newBbox[2] = Math.min(1000, newBbox[2] + step);
+                if (direction === 'left') newBbox[1] = Math.max(0, newBbox[1] - step);
+                if (direction === 'right') newBbox[3] = Math.min(1000, newBbox[3] + step);
+                editBboxRef.current = newBbox;
+
+                const source = editingImageObjRef.current;
+                const newImg = await cutImageFromBase(source, newBbox);
+
+                setEditingItem(prev => ({ ...prev, bbox: newBbox, tempImg: newImg }));
+
+            }, [editingItem]);
+
+            // [개선됨] 고화질 변환을 완전 비동기로 분리하여 다른 항목 편집 즉시 가능
+            const endEditing = useCallback(() => {
+                if (!editingItem) return;
+
+                const { pageNum, itemIdx } = editingItem;
+                const finalBbox = editBboxRef.current;
+                const finalTempImg = editingItem.tempImg;
+
+                const editKey = `${pageNum}-${itemIdx}`;
+                userEditsRef.current[editKey] = { bbox: finalBbox, img: finalTempImg };
+
+                // 1. UI 즉시 업데이트 (로컬 이미지)
+                setResults(prev => prev.map(p => {
+                    if (p.pageNum !== pageNum) return p;
+                    const newItems = p.items.map(it => {
+                        if (it.originalItemIndex === itemIdx) {
+                            return { ...it, bbox: finalBbox, img: finalTempImg, isHighResLoading: true };
+                        }
+                        return it;
+                    });
+                    return { ...p, items: newItems };
+                }));
+
+                // 편집 상태 즉시 해제 (다른 항목 편집 가능)
+                setEditingItem(null);
+                editBboxRef.current = null;
+                editingImageObjRef.current = null;
+
+                // 2. 백그라운드 고화질 변환 (setTimeout으로 완전 비동기 분리)
+                const currentJobId = pdfJobId || localStorage.getItem('last_pdf_job_id');
+                if (currentJobId) {
+                    setTimeout(async () => {
+                        try {
+                            const cropPayload = {
+                                job_id: currentJobId,
+                                page_num: pageNum,
+                                items: [{ id: 'manual_edit', bbox: finalBbox }],
+                                dpi: targetDpi
+                            };
+                            const res = await fetch("http://localhost:8000/crop_batch_items", {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(cropPayload)
+                            });
+
+                            if (res.ok) {
+                                const data = await res.json();
+                                const highResImg = data.results[0]?.img;
+                                if (highResImg) {
+                                    userEditsRef.current[editKey] = { bbox: finalBbox, img: highResImg };
+                                    saveEdits();
+
+                                    setResults(prev => prev.map(p => {
+                                        if (p.pageNum !== pageNum) return p;
+                                        const newItems = p.items.map(it => {
+                                            if (it.originalItemIndex === itemIdx) {
+                                                return { ...it, img: highResImg, isHighResLoading: false };
+                                            }
+                                            return it;
+                                        });
+                                        return { ...p, items: newItems };
+                                    }));
+                                }
+                            }
+                        } catch (e) {
+                            console.error("High Res Update Failed", e);
+                            setResults(prev => prev.map(p => {
+                                if (p.pageNum !== pageNum) return p;
+                                const newItems = p.items.map(it => {
+                                    if (it.originalItemIndex === itemIdx) return { ...it, isHighResLoading: false };
+                                    return it;
+                                });
+                                return { ...p, items: newItems };
+                            }));
+                        }
+                    }, 0); // setTimeout 0으로 이벤트 루프로 분리
+                }
+            }, [editingItem, targetDpi, pdfJobId]);
+
+            const handleDeleteItem = useCallback((pageNum, itemIdx) => {
+                if (!confirm("삭제?")) return;
+
+                // 1. UI 즉시 업데이트
+                setResults(prev => prev.map(p => {
+                    if (p.pageNum !== pageNum) return p;
+                    return { ...p, items: p.items.filter((it) => it.originalItemIndex !== itemIdx) };
+                }).filter(p => p.items.length > 0));
+
+                // 2. 비동기 저장
+                deletedItemsRef.current.add(`${pageNum}-${itemIdx}`);
+                saveEdits();
+            }, []);
+
+            const toggleSelectResult = useCallback((fName) => {
+                setSelectedResultIds(prev => {
+                    const next = new Set(prev);
+                    if (next.has(fName)) next.delete(fName);
+                    else next.add(fName);
+                    return next;
+                });
+            }, []);
+
+            const handlePreview = useCallback((img) => {
+                setPreviewImg(img);
+                setIsZoomed(false);
+            }, []);
+
+            const handleBatchSubmit = async () => {
+                const validKeys = currentAiConfig.apiKeys.filter(k => k.key.trim()); if (!validKeys.length) return alert("API 키 필요");
+                let targetPages = selectedIds.size ? pages.filter(p => selectedIds.has(p.id)) : [...pages];
+                targetPages.sort((a, b) => a.pageNum - b.pageNum); if (!targetPages.length) return alert("페이지 없음");
+                if (!confirm(`총 ${targetPages.length} 페이지 Batch 전송?`)) return;
+                setIsProcessing(true); log("📡 Batch 데이터 전송 중...");
+                try {
+                    const batchItems = [];
+                    for (const p of targetPages) {
+                        let imgB64 = "";
+                        if (p.is_server_processed) {
+                            imgB64 = p.thumb.split(',')[1];
+                        } else {
+                            const dpiScale = Math.max(0.5, targetDpi / 72);
+                            const pg = await p.pdfDoc.getPage(p.pageNum); const vp = pg.getViewport({ scale: dpiScale });
+                            const cvs = document.createElement('canvas'); cvs.height = vp.height; cvs.width = vp.width;
+                            await pg.render({ canvasContext: cvs.getContext('2d'), viewport: vp }).promise;
+                            imgB64 = cvs.toDataURL('image/jpeg', 0.8).split(',')[1];
+                        }
+                        batchItems.push({ custom_id: `PAGE_${p.pageNum}`, prompt: currentPrompt.content + "\nOutput strictly Standard JSON.", image_base64: imgB64 });
+                    }
+                    const res = await fetch("http://localhost:8000/submit_batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_key: validKeys[0].key, model: currentAiConfig.model, items: batchItems }) });
+                    if (!res.ok) throw new Error("서버 통신 실패"); const data = await res.json();
+                    setBatchId(data.batch_id); localStorage.setItem('last_batch_id', data.batch_id); alert(`✅ Batch ID: ${data.batch_id}`);
+                } catch (e) { log(`❌ Batch 에러: ${e.message}`); alert("실패. server.py 실행 확인"); }
+                setIsProcessing(false);
+            };
+
+            const checkBatchStatus = async () => {
+                if (!batchId) return; const validKeys = currentAiConfig.apiKeys.filter(k => k.key.trim()); if (!validKeys.length) return alert("API 키 필요");
+                log("🔄 Batch 확인 중...");
+                try {
+                    const res = await fetch(`http://localhost:8000/check_batch/${batchId}?api_key=${validKeys[0].key}`); const data = await res.json();
+                    if (data.state === "COMPLETED") {
+                        log("🎉 완료! 결과 처리 중...");
+                        const newRawResults = [];
+                        const currentJobId = pdfJobId || localStorage.getItem('last_pdf_job_id');
+
+                        for (const item of data.results) {
+                            try {
+                                const jsonText = item.response.body.candidates[0].content.parts[0].text; const match = jsonText.match(/\{[\s\S]*\}/); if (!match) continue; const parsed = JSON.parse(match[0]);
+                                const pageNum = parseInt(item.custom_id.replace('PAGE_', '')); const originalPage = pages.find(p => p.pageNum === pageNum);
+                                if (originalPage && parsed.pages) {
+                                    const rawItems = parsed.pages[0].items || [];
+                                    const paddedItems = rawItems.map((it, idx) => {
+                                        const [y1, x1, y2, x2] = it.bbox || [0, 0, 0, 0];
+                                        const pTop = paddings.top;
+                                        const pBot = paddings.bottom;
+                                        const pLeft = paddings.left;
+                                        const pRight = paddings.right;
+                                        return {
+                                            id: `batch_${idx}`,
+                                            bbox: [
+                                                Math.max(0, y1 - pTop),
+                                                Math.max(0, x1 - pLeft),
+                                                Math.min(1000, y2 + pBot),
+                                                Math.min(1000, x2 + pRight)
+                                            ]
+                                        };
+                                    });
+
+                                    const cropPayload = {
+                                        job_id: currentJobId,
+                                        page_num: pageNum,
+                                        items: paddedItems,
+                                        dpi: targetDpi
+                                    };
+
+                                    const cropRes = await fetch("http://localhost:8000/crop_batch_items", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cropPayload) });
+                                    if (cropRes.ok) {
+                                        const cropData = await cropRes.json();
+                                        const validItems = [];
+                                        for (let i = 0; i < rawItems.length; i++) {
+                                            const raw = rawItems[i];
+                                            const serverImg = cropData.results[i];
+                                            const finalBbox = paddedItems[i].bbox;
+
+                                            if (raw.type !== 'ignore' && serverImg && serverImg.img) {
+                                                validItems.push({ ...raw, bbox: finalBbox, img: serverImg.img, raw_number: raw.number, raw_chapter: raw.header_text, fName: `BATCH_${Date.now()}_${i}.webp` });
+                                            }
+                                        }
+                                        if (validItems.length) newRawResults.push({ pageNum, items: validItems });
+                                    }
+                                }
+                            } catch (err) { console.error(err); }
+                        }
+                        setResults(recalculateContext(newRawResults)); log("✅ 로드 완료!"); setBatchId(null); localStorage.removeItem('last_batch_id');
+                    } else if (data.state === "FAILED") { alert(`❌ 실패: ${data.error}`); setBatchId(null); localStorage.removeItem('last_batch_id'); } else { alert(`⏳ 상태: ${data.state}`); }
+                } catch (e) { log(`❌ 오류: ${e.message}`); }
+            };
+
+            const handleStop = () => {
+                log("🛑 중단 요청... 안전하게 정리 중...");
+                stopRef.current = true;
+
+                if (abortControllerRef.current) {
+                    abortControllerRef.current.abort();
+                }
+
+                setIsProcessing(false);
+            };
+
+            const startProcessing = async () => {
+                const validKeys = currentAiConfig.apiKeys.filter(k => k.key.trim());
+                if (!validKeys.length) return alert("API 키 입력 필요");
+
+                let allTargetPages = selectedIds.size ? pages.filter(p => selectedIds.has(p.id)) : [...pages];
+                allTargetPages.sort((a, b) => a.pageNum - b.pageNum);
+
+                if (!allTargetPages.length) return alert("페이지 없음");
+
+                const existingPageNums = new Set(results.map(r => r.pageNum));
+                const pendingPages = allTargetPages.filter(p => !existingPageNums.has(p.pageNum));
+
+                if (pendingPages.length === 0) return alert("모든 페이지가 이미 처리되었습니다.");
+
+                const resumeMsg = results.length > 0 ? `기존 ${results.length}장은 건너뛰고, ${pendingPages.length}장만 처리합니다.` : `총 ${pendingPages.length}페이지 분석 시작`;
+                log(`🚀 ${resumeMsg}`);
+
+                if (!guardActive) toggleGuard(true);
+
+                setIsProcessing(true);
+                stopRef.current = false;
+
+                if (abortControllerRef.current) abortControllerRef.current.abort();
+                abortControllerRef.current = new AbortController();
+
+                const queue = [...pendingPages];
+                let allRawResults = [...results];
+                let processedCount = 0;
+                const totalCount = pendingPages.length;
+
+                const updateDisplay = () => {
+                    if (stopRef.current) return;
+                    try { setResults(recalculateContext(allRawResults)); } catch (e) { console.error("Display Update Error"); }
+                };
+
+                const runWorker = async (workerId) => {
+                    while (queue.length > 0 && !stopRef.current) {
+                        // [FIXED] batchSize 적용: 여러 페이지를 한 번에 처리
+                        const batch = queue.splice(0, Math.min(batchSize, queue.length));
+                        if (!batch.length) break;
+
+                        let success = false;
+                        let retryCount = 0;
+                        let failedKeyCount = 0;
+
+                        while (!success && !stopRef.current) {
+                            if (failedKeyCount >= validKeys.length) {
+                                stopRef.current = true;
+                                setIsProcessing(false);
+                                alert("🛑 모든 API 키를 시도했으나 429(Rate Limit) 등의 사유로 실패하여 작업을 중단합니다.");
+                                return;
+                            }
+
+                            try {
+                                lastKeyIdxRef.current = (lastKeyIdxRef.current + 1) % validKeys.length;
+                                const keyData = validKeys[lastKeyIdxRef.current];
+
+                                const res = await processBatchWorker(
+                                    batch, // 배치 전체 전달
+                                    currentAiConfig,
+                                    keyData,
+                                    currentPrompt.content,
+                                    abortControllerRef.current.signal
+                                );
+
+                                if (Array.isArray(res)) {
+                                    if (res.length > 0) {
+                                        allRawResults.push(...res);
+                                    }
+                                    processedCount += batch.length;
+                                    const pageNumsStr = batch.map(p => p.pageNum).join(',');
+                                    log(`✅ [${Math.round((processedCount / totalCount) * 100)}%] p.${pageNumsStr} 완료 (${batch.length}장 배치)`);
+                                    updateDisplay();
+                                    success = true;
+                                } else if (res === 'RATE_LIMIT') {
+                                    failedKeyCount++;
+                                    if (validKeys.length > 1) {
+                                        log(`⚡ 429(Too Many Requests) - 대기 없이 다음 키로 즉시 전환`);
+                                        await delay(200);
+                                        continue;
+                                    } else {
+                                        retryCount++;
+                                        const waitTime = Math.min(2000 * retryCount, 20000);
+                                        log(`⚠️ 429 감지 (키가 1개뿐이라 대기함) - ${waitTime / 1000}초 대기`);
+                                        await delay(waitTime);
+                                    }
+                                } else {
+                                    failedKeyCount++;
+                                    retryCount++;
+                                    const waitTime = Math.min(1000 * retryCount, 10000);
+                                    const pageNumsStr = batch.map(p => p.pageNum).join(',');
+                                    log(`⚠️ p.${pageNumsStr} 실패 (재시도 ${retryCount}회, ${waitTime / 1000}초 대기...)`);
+                                    await delay(waitTime);
+                                }
+                            } catch (err) {
+                                if (stopRef.current) break;
+                                failedKeyCount++;
+                                log(`❌ 시스템 에러: ${err.message}`);
+                                await delay(2000);
+                            }
+                        }
+                    }
+                };
+
+                const workers = Array.from({ length: concurrency }, (_, i) => runWorker(i));
+
+                try {
+                    await Promise.all(workers);
+                } catch (e) {
+                    console.error("Batch Process Error", e);
+                } finally {
+                    if (stopRef.current) log("🛑 작업이 안전하게 중단되었습니다.");
+                    else log("🏁 모든 페이지 작업 완료");
+                    setIsProcessing(false);
+                }
+            };
+
+            // [개선됨] 커스텀 필드 기반 ZIP 다운로드 - 챕터 그룹 내 일관된 챕터명 사용
+            const downloadZip = async () => {
+                const zip = new JSZip();
+                const enabledFields = ankiFields.filter(f => f.enabled);
+                const headerLine = '# Anki Import\n# ' + enabledFields.map(f => f.name).join('\t') + '\n';
+                let fullTxt = headerLine;
+                const grouped = {};
+                const chapterTexts = {};
+
+                const sortedResults = [...results].sort((a, b) => a.pageNum - b.pageNum);
+
+                // 헬퍼: 챕터명에서 그룹키 추출 (사용자 정의 정규식 사용)
+                const getChapterGroupKey = (chapName) => {
+                    const trimmed = (chapName || "").trim();
+
+                    // 사용자 정의 정규식 패턴 순차 적용
+                    for (const pattern of regexPatterns) {
+                        if (!pattern.enabled || !pattern.regex) continue;
+                        try {
+                            const regex = new RegExp(pattern.regex);
+                            const match = trimmed.match(regex);
+                            if (match) {
+                                // 캡처 그룹이 있으면 조합, 없으면 전체 매치 반환
+                                if (match.length > 1) {
+                                    return match.slice(1).filter(Boolean).join('');
+                                }
+                                return match[0];
+                            }
+                        } catch (e) {
+                            console.warn(`Invalid regex pattern: ${pattern.regex}`, e);
+                        }
+                    }
+
+                    // 패턴이 없거나 매치되지 않으면 특수문자 제거 후 반환
+                    return trimmed.replace(/[\s_]+/g, '_');
+                };
+
+                // 1단계: 먼저 모든 아이템을 순회하면서 챕터 그룹별 대표 챕터명 결정
+                const chapterGroupTitles = {};
+                sortedResults.forEach(res => {
+                    res.items.forEach(it => {
+                        const chapterName = it.chapter || "Uncategorized";
+                        const groupKey = getChapterGroupKey(chapterName);
+
+                        if (!chapterGroupTitles[groupKey]) {
+                            chapterGroupTitles[groupKey] = chapterName;
+                        } else {
+                            const curTitle = chapterGroupTitles[groupKey];
+
+                            // 1. 현재 타이틀이 언더바('_')가 많은데 새 이름은 깔끔하면 교체 (예: "제_1_편" -> "제1편 행정법")
+                            const curUnder = (curTitle.match(/_/g) || []).length;
+                            const newUnder = (chapterName.match(/_/g) || []).length;
+
+                            if (newUnder < curUnder) {
+                                chapterGroupTitles[groupKey] = chapterName;
+                            }
+                            // 2. 언더바 개수가 비슷하면 더 긴(상세한) 설명이 있는 것 선호
+                            else if (newUnder === curUnder && chapterName.length > curTitle.length) {
+                                chapterGroupTitles[groupKey] = chapterName;
+                            }
+                        }
+                    });
+                });
+
+                // 2단계: 그룹화 - 문제 번호별로 모으되, 챕터명은 그룹 대표 챕터명 사용
+                sortedResults.forEach(res => {
+                    res.items.forEach(it => {
+                        const originalChapter = it.chapter || "Uncategorized";
+                        const groupKey = getChapterGroupKey(originalChapter);
+                        // 그룹의 대표 챕터명 사용 (일관성 보장)
+                        const unifiedChapter = chapterGroupTitles[groupKey] || originalChapter;
+
+                        const key = `${unifiedChapter}_${it.number}`;
+                        if (!grouped[key]) grouped[key] = { q: [], s: [], chap: unifiedChapter, groupKey: groupKey, customFields: {} };
+                        if (it.type === 'question') grouped[key].q.push(it);
+                        else grouped[key].s.push(it);
+                        // 커스텀 필드 데이터 수집
+                        if (it.customFields) {
+                            Object.assign(grouped[key].customFields, it.customFields);
+                        }
+                    });
+                });
+
+                // 3단계: 각 그룹을 순회하면서 행 생성
+                Object.keys(grouped).forEach(k => {
+                    const g = grouped[k];
+                    if (!g.q.length) return;
+
+                    const fieldValues = [];
+
+                    enabledFields.forEach(field => {
+                        if (field.type === 'question' && field.isImage) {
+                            let html = "";
+                            g.q.forEach((i, idx) => {
+                                const ext = i.img.includes('image/jpeg') ? 'jpg' : 'png';
+                                const safeChap = g.chap.trim().replace(/\s+/g, '_').replace(/[\/\\?%*:|"<>]/g, '') || "NoChapter";
+                                const qNum = i.number || "0";
+                                const newName = `${safeChap}_문제_${qNum}_${idx + 1}.${ext}`;
+                                zip.file(newName, i.img.split(',')[1], { base64: true });
+                                html += `<img src="${newName}"><br>`;
+                            });
+                            fieldValues.push(html || " ");
+                        } else if (field.type === 'solution' && field.isImage) {
+                            let html = "";
+                            g.s.forEach((i, idx) => {
+                                const ext = i.img.includes('image/jpeg') ? 'jpg' : 'png';
+                                const safeChap = g.chap.trim().replace(/\s+/g, '_').replace(/[\/\\?%*:|"<>]/g, '') || "NoChapter";
+                                const qNum = i.number || "0";
+                                const newName = `${safeChap}_해설_${qNum}_${idx + 1}.${ext}`;
+                                zip.file(newName, i.img.split(',')[1], { base64: true });
+                                html += `<img src="${newName}"><br>`;
+                            });
+                            fieldValues.push(html || " ");
+                        } else if (field.type === 'tag') {
+                            // 통일된 챕터명 사용
+                            fieldValues.push(g.chap);
+                        } else if (field.type === 'custom') {
+                            // 커스텀 필드 처리
+                            fieldValues.push(g.customFields[field.id] || field.defaultValue || " ");
+                        } else {
+                            fieldValues.push(" ");
+                        }
+                    });
+
+                    const line = fieldValues.join('\t') + '\n';
+                    fullTxt += line;
+
+                    // 챕터 그룹별 파일 생성을 위한 데이터 수집
+                    const groupKey = g.groupKey;
+
+                    if (!chapterTexts[groupKey]) {
+                        chapterTexts[groupKey] = {
+                            rows: [],
+                            fullTitle: g.chap
+                        };
+                    }
+                    chapterTexts[groupKey].rows.push(line);
+                });
+
+                zip.file("anki_full_import.txt", fullTxt);
+                const chapterFolder = zip.folder("Chapters_Split");
+
+                // [개선됨] 챕터 키를 숫자 기준으로 정렬 (제1편, 제2편, ... 제10편 순서 보장)
+                const sortedChapterKeys = Object.keys(chapterTexts).sort((a, b) => {
+                    const matchA = a.match(/^제(\d+)([편장강])/);
+                    const matchB = b.match(/^제(\d+)([편장강])/);
+                    if (matchA && matchB) {
+                        // 같은 단위(편/장/강)끼리 먼저, 그 안에서 숫자 순
+                        const unitOrder = { '편': 1, '장': 2, '강': 3 };
+                        const unitA = unitOrder[matchA[2]] || 99;
+                        const unitB = unitOrder[matchB[2]] || 99;
+                        if (unitA !== unitB) return unitA - unitB;
+                        return parseInt(matchA[1], 10) - parseInt(matchB[1], 10);
+                    }
+                    if (matchA) return -1;
+                    if (matchB) return 1;
+                    return a.localeCompare(b, 'ko');
+                });
+
+                sortedChapterKeys.forEach(key => {
+                    const group = chapterTexts[key];
+
+                    // [개선됨] 파일명/덱 이름 앞부분 정규화 (제_4_편 -> 제4편)
+                    let cleanTitle = group.fullTitle.trim()
+                        .replace(/^제[\s_]*(\d+)[\s_]*([편장강])[\s_]*/, '제$1$2 ')
+                        .trim();
+
+                    const deckName = cleanTitle.replace(/[\/\\?%*:|"<>]/g, '');
+                    const content = `# deck: ${deckName}\n` + headerLine + group.rows.join('');
+
+                    // 파일명: 숫자 정렬을 위해 2자리 패딩 적용 (제1편 -> 제01편)
+                    let safeTitle = cleanTitle
+                        .replace(/^제(\d)([편장강])/, '제0$1$2')  // 한자리 숫자면 0 붙이기
+                        .replace(/\s+/g, '_')
+                        .replace(/[\/\\?%*:|"<>]/g, '');
+
+                    chapterFolder.file(`${safeTitle}.txt`, content);
+                });
+
+                const blob = await zip.generateAsync({ type: "blob" });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = "Anki_Result.zip";
+                link.click();
+            };
+            const cancelBatch = () => { if (confirm('취소하시겠습니까? (서버 작업은 계속될 수 있습니다)')) { setBatchId(null); localStorage.removeItem('last_batch_id'); } };
+
+            const selectAllResult = () => {
+                const allIds = new Set();
+                results.forEach(pg => pg.items.forEach(it => allIds.add(it.fName)));
+                setSelectedResultIds(allIds);
+            };
+
+            const deselectAllResult = () => setSelectedResultIds(new Set());
+
+            const deleteSelectedResult = () => {
+                if (!selectedResultIds.size) return;
+                if (!confirm(`${selectedResultIds.size}개 항목을 삭제하시겠습니까?`)) return;
+
+                // 1. UI 즉시 업데이트
+                setResults(prev => prev.map(pg => ({
+                    ...pg,
+                    items: pg.items.filter(it => !selectedResultIds.has(it.fName))
+                })).filter(pg => pg.items.length > 0));
+
+                // 2. 비동기 저장
+                results.forEach(pg => {
+                    pg.items.forEach(it => {
+                        if (selectedResultIds.has(it.fName)) {
+                            deletedItemsRef.current.add(`${pg.pageNum}-${it.originalItemIndex}`);
+                        }
+                    });
+                });
+
+                saveEdits();
+                setSelectedResultIds(new Set());
+            };
+
+            // [FIXED] 재실행 로직 - 개선된 에러 핸들링
+            const handleRetry = async (pageNum) => {
+                if (retryingPage) return;
+                setRetryingPage(pageNum);
+                log(`🔄 p.${pageNum} 재분석 준비...`);
+
+                // 1. 페이지 객체 찾기
+                let targetPage = pages.find(p => p.pageNum === pageNum);
+
+                // 2. 만약 페이지(이미지 데이터)가 없다면(새로고침 직후 등), 서버에서 Job ID를 이용해 복구 시도
+                if (!targetPage) {
+                    const lastJobId = pdfJobId || localStorage.getItem('last_pdf_job_id');
+                    if (lastJobId) {
+                        try {
+                            log(`⚠️ 원본 데이터 복구 시도 (p.${pageNum}, DPI=${pdfDpi})...`);
+                            const imgRes = await fetch("http://localhost:8000/get_page_image", {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ job_id: lastJobId, page_num: pageNum, dpi: pdfDpi })
+                            });
+
+                            if (imgRes.ok) {
+                                const imgData = await imgRes.json();
+                                if (imgData && imgData.img) {
+                                    targetPage = {
+                                        pageNum: pageNum,
+                                        is_server_processed: true,
+                                        thumb: imgData.img,
+                                        id: `restored_${pageNum}`
+                                    };
+                                    log(`✅ p.${pageNum} 이미지 복구 성공`);
+                                } else {
+                                    log(`❌ p.${pageNum} 서버 응답에 이미지 없음`);
+                                }
+                            } else {
+                                const errText = await imgRes.text();
+                                log(`❌ 이미지 복구 실패: ${errText}`);
+                            }
+                        } catch (e) {
+                            console.error("Restore failed", e);
+                            log(`❌ 이미지 복구 중 에러: ${e.message}`);
+                        }
+                    } else {
+                        log(`❌ Job ID가 없어 복구 불가능`);
+                    }
+                }
+
+                if (!targetPage) {
+                    alert("원본 페이지 데이터를 찾을 수 없습니다. PDF를 다시 업로드해주세요.");
+                    log("❌ 실패: 원본 데이터 없음");
+                    setRetryingPage(null);
+                    return;
+                }
+
+                const validKeys = currentAiConfig.apiKeys.filter(k => k.key.trim());
+                if (!validKeys.length) {
+                    alert("API 키가 없습니다.");
+                    log("❌ 유효한 API 키 없음");
+                    setRetryingPage(null);
+                    return;
+                }
+
+                // 3. 해당 페이지의 삭제 이력 및 편집 이력 초기화
+                try {
+                    const newDeleted = new Set([...deletedItemsRef.current].filter(k => !k.startsWith(`${pageNum}-`)));
+                    deletedItemsRef.current = newDeleted;
+
+                    const newEdits = { ...userEditsRef.current };
+                    Object.keys(newEdits).forEach(k => { if (k.startsWith(`${pageNum}-`)) delete newEdits[k]; });
+                    userEditsRef.current = newEdits;
+
+                    await saveEdits(); // DB 즉시 반영
+                    log(`🧹 p.${pageNum} 과거 이력(삭제/수정) 초기화 완료`);
+                } catch (e) { console.error("Clean history failed", e); }
+
+                // 4. 재실행
+                try {
+                    log(`🔄 p.${pageNum} 재분석 시작...`);
+                    const res = await processBatchWorker([targetPage], currentAiConfig, validKeys[0], currentPrompt.content, new AbortController().signal);
+
+                    if (res && res.length > 0) {
+                        setResults(prev => recalculateContext([...prev.filter(p => p.pageNum !== pageNum), ...res]));
+                        log(`✅ p.${pageNum} 재분석 완료!`);
+                    } else if (res === 'RATE_LIMIT') {
+                        log(`⚠️ 429 Rate Limit 발생 (재시도 실패)`);
+                        alert("API 사용량 제한(429)이 발생했습니다.");
+                    } else {
+                        log(`⚠️ p.${pageNum} 결과 없음 (AI가 아이템을 찾지 못함)`);
+                    }
+                } catch (e) {
+                    console.error(e);
+                    log(`❌ 재시도 에러: ${e.message}`);
+                    alert("재시도 실패 (로그 확인)");
+                } finally {
+                    setTimeout(() => setRetryingPage(null), 100);
+                }
+            };
+
+            // [NEW] 완전 초기화 함수 (블랙리스트까지 삭제)
+            const handleFullReset = async () => {
+                if (!confirm('모든 결과를 삭제하시겠습니까? (되돌릴 수 없습니다)')) return;
+
+                // 1. 메모리 초기화
+                setResults([]);
+                deletedItemsRef.current = new Set();
+                userEditsRef.current = {};
+
+                // 2. 저장소 초기화
+                localStorage.removeItem('auto_saved_results');
+                await idbSave('results', []);
+                await idbSave('user_edits', {});
+                await idbSave('deleted_items', []);
+
+                log("🧹 모든 데이터가 초기화되었습니다.");
+            };
+
+            const [isDragging, setIsDragging] = useState(false);
+            const [dragStartIndex, setDragStartIndex] = useState(null);
+            const [initialSelectedIds, setInitialSelectedIds] = useState(new Set());
+            useEffect(() => { const up = () => { setIsDragging(false); setDragStartIndex(null); }; window.addEventListener('mouseup', up); return () => window.removeEventListener('mouseup', up); }, []);
+
+            return (
+                <ErrorBoundary>
+                    <div className={`max-w-[1800px] mx-auto p-4 md:p-6 space-y-6 transition-all duration-300 ${guardActive ? 'guard-active rounded-[2.5rem]' : ''}`}>
+                        <header className="bg-white p-6 rounded-[2rem] shadow-xl flex flex-col md:flex-row justify-between items-center gap-4 border border-indigo-50">
+                            <div className="flex items-center gap-4">
+                                <div className="p-4 bg-indigo-600 rounded-2xl text-white shadow-lg"><LucideIcon name="scissors" size={32} /></div>
+                                <div>
+                                    <h1 className="text-2xl font-black italic text-slate-800">{t.title}</h1>
+                                    <div className="flex items-center gap-2">
+                                        <select value={language} onChange={e => setLanguage(e.target.value)} className="text-xs bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5 font-bold text-slate-600 cursor-pointer">
+                                            <option value="ko">🇰🇷 한국어</option>
+                                            <option value="en">🇺🇸 English</option>
+                                            <option value="zh">🇨🇳 中文</option>
+                                        </select>
+                                        <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${serverStatus ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-slate-100 border-slate-200 text-slate-400'} transition-all`}>
+                                            <div className={`w-1.5 h-1.5 rounded-full ${serverStatus ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`}></div>
+                                            <span className="text-[9px] font-bold">{serverStatus ? t.serverOn : t.serverOff}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex gap-2 items-center">
+                                <div className="flex flex-col items-end mr-2">
+                                    <span className={`text-[10px] font-bold transition-colors ${saveStatus === 'saving' ? 'text-indigo-500 animate-pulse' : saveStatus === 'error' ? 'text-rose-500' : 'text-slate-300'}`}>
+                                        {saveStatus === 'saving' ? t.saving : saveStatus === 'error' ? t.saveFailed : t.autoSaved}
+                                    </span>
+                                </div>
+                                <button onClick={() => toggleGuard()} className={`px-4 py-2 rounded-xl text-xs font-bold shadow-md transition-all flex items-center gap-2 ${guardActive ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                    <LucideIcon name={guardActive ? "shield-check" : "shield-off"} size={14} />
+                                    {guardActive ? t.systemProtectOn : t.systemProtectOff}
+                                </button>
+                                <button
+                                    onClick={async () => {
+                                        if (!serverStatus) return alert('서버가 연결되지 않았습니다.');
+                                        if (!confirm(`임시 PDF ${tempPdfCount}개를 삭제하시겠습니까?`)) return;
+                                        try {
+                                            const res = await fetch('http://localhost:8000/clear_temp_pdfs', { method: 'DELETE' });
+                                            if (res.ok) {
+                                                const data = await res.json();
+                                                setTempPdfCount(0);
+                                                log(`🗑️ 임시 파일 ${data.deleted_count}개 삭제 완료`);
+                                                alert(`${data.deleted_count}개 파일 삭제 완료`);
+                                            }
+                                        } catch (e) { alert('삭제 실패: ' + e.message); }
+                                    }}
+                                    disabled={!serverStatus || tempPdfCount === 0}
+                                    className="px-3 py-2 rounded-xl text-xs font-bold shadow-md transition-all flex items-center gap-2 bg-orange-50 border border-orange-200 text-orange-600 hover:bg-orange-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    title="서버의 임시 PDF 파일을 삭제합니다"
+                                >
+                                    <LucideIcon name="trash" size={14} />
+                                    Temp ({tempPdfCount})
+                                </button>
+                                <div className="w-px h-8 bg-slate-200"></div>
+                                {batchId ? (
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={checkBatchStatus} className="bg-emerald-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md flex items-center gap-2 hover:bg-emerald-600">
+                                            <LucideIcon name="refresh-cw" size={14} /> {t.batchCheck}
+                                        </button>
+                                        <button onClick={cancelBatch} className="bg-slate-100 text-slate-500 px-3 py-2 rounded-xl text-xs font-bold hover:bg-slate-200">
+                                            <LucideIcon name="x" size={14} />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button onClick={handleBatchSubmit} disabled={isLoadingPdf || !pages.length || isProcessing} className="bg-violet-600 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md flex items-center gap-2 hover:bg-violet-700 disabled:bg-slate-300">
+                                        <LucideIcon name="send" size={14} /> {t.batchSend}
+                                    </button>
+                                )}
+                                {isProcessing ? <button onClick={handleStop} className="bg-rose-500 text-white px-10 py-4 rounded-2xl font-bold shadow-lg animate-pulse hover:bg-rose-600 transition-colors flex items-center gap-2"><LucideIcon name="octagon" size={14} /> {t.stop}</button> : <button onClick={startProcessing} disabled={isLoadingPdf || !pages.length || isProcessing} className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-bold hover:scale-105 shadow-xl transition-all disabled:bg-slate-300">
+                                    {results.length > 0 ? `${t.continueFrom} (p.${Math.max(...results.map(r => r.pageNum)) + 1})` : t.startRealtime}
+                                </button>}
+                            </div>
+                        </header>
+                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                            <aside className="lg:col-span-3 space-y-6">
+                                <div className="bg-white p-5 rounded-[2rem] shadow-xl space-y-4 border border-indigo-50"><div className="flex justify-between items-center border-b border-indigo-100 pb-2"><h2 className="font-bold flex items-center gap-2 text-indigo-900"><LucideIcon name="cpu" /> {t.aiEngine}</h2><div className="flex gap-1"><button onClick={() => aiFileRef.current.click()} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded hover:bg-indigo-100"><LucideIcon name="download" size={10} /></button><button onClick={exportAiProfiles} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded hover:bg-indigo-100"><span className="font-bold">ALL</span><LucideIcon name="upload" size={10} /></button><input type="file" className="hidden" ref={aiFileRef} onChange={importAiProfiles} accept=".json" /></div></div><div className="flex flex-wrap gap-1 -mt-2"><button onClick={saveAiProfile} className="flex-1 text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded hover:bg-indigo-700">{t.save}</button><button onClick={exportCurrentAiProfile} className="flex-1 text-[10px] bg-white border border-slate-200 text-slate-600 px-2 py-1.5 rounded hover:bg-slate-50">{t.export1}</button><button onClick={deleteAiProfile} disabled={currentAiConfig.id === 'temp'} className="text-[10px] bg-rose-100 text-rose-600 px-3 py-1.5 rounded hover:bg-rose-200 disabled:opacity-30 disabled:cursor-not-allowed">{t.delete}</button></div><div className="input-group"><label>{t.profile}</label><select onChange={loadAiProfile} value={currentAiConfig.id} className="font-bold text-indigo-600"><option value="new">{t.newSetting}</option>{aiProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div><div className="space-y-3 p-3 bg-slate-50 rounded-xl border"><div className="input-group"><label>{t.provider}</label><select value={currentAiConfig.providerType} onChange={e => { const type = e.target.value; const def = PROVIDER_TYPES.find(t => t.id === type); setCurrentAiConfig({ ...currentAiConfig, providerType: type, baseUrl: def.defaultUrl, model: def.defaultModel }); }}>{PROVIDER_TYPES.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div><div className="input-group"><label>{t.model}</label><input value={currentAiConfig.model} onChange={e => setCurrentAiConfig({ ...currentAiConfig, model: e.target.value })} placeholder="" /></div><div className="input-group"><label>{t.baseUrl}</label><input value={currentAiConfig.baseUrl} onChange={e => setCurrentAiConfig({ ...currentAiConfig, baseUrl: e.target.value })} placeholder="https://api..." className="font-mono text-[10px] text-slate-400" /></div><div className="input-group"><label className="flex justify-between">{t.apiKeys} <button onClick={addKey} className="text-[9px] text-indigo-500">{t.addKey}</button></label><div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">{currentAiConfig.apiKeys.map((k, idx) => (<div key={idx} className="flex flex-col gap-1 bg-white p-2 rounded border"><div className="flex gap-1"><input type="text" value={k.name} onChange={e => updateKey(idx, 'name', e.target.value)} placeholder={t.alias} className="w-1/3 text-[10px] font-bold text-indigo-500 bg-indigo-50/50" /><button onClick={() => removeKey(idx)} className="text-slate-300 hover:text-rose-500 px-1 ml-auto"><LucideIcon name="trash-2" size={12} /></button></div><input type="password" value={k.key} onChange={e => updateKey(idx, 'key', e.target.value)} placeholder="sk-..." className="w-full font-mono text-[10px]" /></div>))}</div></div></div></div>
+                                <div className="bg-white p-5 rounded-[2rem] shadow-xl space-y-4"><div className="flex justify-between items-center border-b pb-2"><h2 className="font-bold flex items-center gap-2"><LucideIcon name="message-square" /> {t.prompt}</h2><div className="flex gap-1"><button onClick={() => promptFileRef.current.click()} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1 rounded hover:bg-slate-200"><LucideIcon name="download" size={10} /></button><button onClick={exportPrompts} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1 rounded hover:bg-slate-200"><span className="font-bold">ALL</span><LucideIcon name="upload" size={10} /></button><input type="file" className="hidden" ref={promptFileRef} onChange={importPrompts} accept=".json" /></div></div><div className="flex flex-wrap gap-1 -mt-2"><button onClick={updateCurrentPrompt} className="flex-1 text-[10px] bg-indigo-600 text-white px-2 py-1.5 rounded hover:bg-indigo-700">{t.save}</button><button onClick={exportCurrentPrompt} className="flex-1 text-[10px] bg-white border border-slate-200 text-slate-600 px-2 py-1.5 rounded hover:bg-slate-50">{t.export1}</button><button onClick={deletePromptProfile} disabled={currentPrompt.id.startsWith('default')} className="text-[10px] bg-rose-100 text-rose-600 px-3 py-1.5 rounded hover:bg-rose-200 disabled:opacity-30 disabled:cursor-not-allowed">{t.delete}</button></div><div className="flex gap-1"><button onClick={savePromptAsNew} className="flex-1 text-[10px] bg-slate-50 border border-slate-200 text-slate-600 px-2 py-1.5 rounded hover:bg-slate-100">{t.saveAsNew}</button><button onClick={createNewPrompt} className="flex-1 text-[10px] bg-slate-50 border border-slate-200 text-slate-600 px-2 py-1.5 rounded hover:bg-slate-100">{t.newPrompt}</button></div><div className="input-group"><select onChange={(e) => { const found = promptProfiles.find(p => p.id === e.target.value); if (found) setCurrentPrompt({ ...found }); }} value={currentPrompt.id} className="font-bold">{promptProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}{currentPrompt.id.startsWith('temp_') && <option value={currentPrompt.id}>{currentPrompt.name}</option>}</select></div><textarea value={currentPrompt.content} onChange={e => setCurrentPrompt({ ...currentPrompt, content: e.target.value })} className="w-full h-48 p-3 bg-slate-50 rounded-xl text-[10px] custom-scrollbar border resize-none font-mono" /></div>
+                                <div className="bg-white p-5 rounded-[2rem] shadow-xl space-y-4"><h2 className="font-bold border-b pb-2 flex items-center gap-2"><LucideIcon name="sliders" /> {t.commonSettings}</h2><div className="flex gap-2"><div className="input-group flex-1"><label>{t.batchSize}</label><input type="number" value={batchSize} onChange={e => setBatchSize(Number(e.target.value))} className="text-center font-bold" /></div><div className="input-group flex-1"><label>{t.concurrent}</label><input type="number" value={concurrency} onChange={e => setConcurrency(Number(e.target.value))} className="text-center font-bold bg-indigo-50 text-indigo-600 border-indigo-200" /></div></div><div className="input-group"><label>{t.resultDpi}</label><input type="number" value={targetDpi} onChange={e => setTargetDpi(Number(e.target.value))} className="font-bold text-center" step="10" /></div><div className="flex gap-2"><div className="input-group flex-1"><label>{t.pdfDpi}</label><input type="number" value={pdfDpi} onChange={e => setPdfDpi(Number(e.target.value))} className="font-bold text-center bg-indigo-50 text-indigo-600 border-indigo-200" step="10" /></div><div className="input-group flex-1"><label>{t.temperature}</label><input type="number" min="0" max="2" step="0.1" value={aiTemperature} onChange={e => setAiTemperature(parseFloat(e.target.value))} className="font-bold text-center" /></div></div><div className="flex justify-between text-[9px] text-slate-400 font-bold px-1"><span>{t.dpiRecommend}</span><span>{t.tempRange}</span></div><div className="input-group"><label>{t.padding}</label><div className="grid grid-cols-2 gap-2"><div><label>Top</label><input type="number" value={String(paddings.top)} onFocus={e => e.target.select()} onChange={e => setPaddings({ ...paddings, top: Number(e.target.value) })} /></div><div><label>Bottom</label><input type="number" value={String(paddings.bottom)} onFocus={e => e.target.select()} onChange={e => setPaddings({ ...paddings, bottom: Number(e.target.value) })} /></div><div><label>Left</label><input type="number" value={String(paddings.left)} onFocus={e => e.target.select()} onChange={e => setPaddings({ ...paddings, left: Number(e.target.value) })} /></div><div><label>Right</label><input type="number" value={String(paddings.right)} onFocus={e => e.target.select()} onChange={e => setPaddings({ ...paddings, right: Number(e.target.value) })} /></div></div></div><div className="mt-4 border-t pt-2"><div className="flex justify-between items-center mb-2"><span className="text-xs font-bold text-slate-400">{t.log}</span><button onClick={() => setLogs([])} className="text-[10px] text-rose-400">{t.clear}</button></div><div className="h-32 overflow-y-auto custom-scrollbar bg-slate-900 p-2 rounded-lg font-mono text-[10px] leading-relaxed shadow-inner">{[...logs].reverse().map((m, i) => (<div key={i} className={`border-b border-slate-800/50 pb-1 mb-1 break-all ${m.includes('에러') ? 'text-rose-400' : m.includes('완료') ? 'text-emerald-400' : 'text-indigo-200'}`}>{m}</div>))}</div></div></div>
+                            </aside>
+                            <main className="lg:col-span-9 space-y-6">
+                                <div className="bg-white p-8 rounded-[2rem] shadow-xl min-h-[500px]"><div className="flex flex-wrap justify-between items-center mb-6 gap-4"><h2 className="text-xl font-black italic flex items-center gap-2"><LucideIcon name="images" /> {t.pageGallery}</h2><div className="flex items-center gap-2"><div className="hidden lg:flex items-center gap-1 mr-4 bg-yellow-50 px-2 py-1 rounded border border-yellow-200 text-[10px] text-yellow-700 font-bold"><LucideIcon name="alert-triangle" size={12} /> {t.tips}</div><button onClick={() => setSelectedIds(new Set(pages.map(p => p.id)))} className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100">{t.selectAll}</button><button onClick={() => setSelectedIds(new Set())} className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg hover:bg-slate-200">{t.deselect}</button>{selectedIds.size > 0 && <button onClick={() => { if (confirm("삭제?")) { setPages(prev => prev.filter(p => !selectedIds.has(p.id))); setSelectedIds(new Set()); } }} className="text-xs font-bold text-rose-600 bg-rose-50 px-3 py-1.5 rounded-lg">{t.deleteSelected}</button>}<label className="bg-indigo-600 text-white px-6 py-2 rounded-xl text-xs font-bold cursor-pointer hover:bg-indigo-700 shadow-lg shadow-indigo-200 ml-2">{t.uploadPdf} <input type="file" multiple accept="application/pdf" onChange={handlePdf} className="hidden" /></label></div></div><div ref={galleryContainerRef} onScroll={e => setScrollTop(e.target.scrollTop)} className="h-[500px] overflow-y-auto p-4 custom-scrollbar select-none bg-slate-50 rounded-2xl border border-slate-200/60 relative">{!pages.length && !isLoadingPdf && <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300 italic gap-4"><LucideIcon name="file-up" size={48} /><span>{t.uploadPdfHere}</span></div>}{isLoadingPdf && <div className="absolute inset-0 flex flex-col items-center justify-center text-indigo-600 font-bold z-10 bg-white/80"><LucideIcon name="loader-2" className="animate-spin mb-2" size={32} /> {t.converting}</div>}<div style={{ height: virtualItems.totalHeight }} className="relative w-full">{virtualItems.items.map(pg => (<div key={pg.id} style={pg.style} onMouseDown={e => { e.preventDefault(); setIsDragging(true); setDragStartIndex(pg.originalIndex); setInitialSelectedIds(new Set(selectedIds)); const n = new Set(selectedIds); if (n.has(pg.id)) n.delete(pg.id); else n.add(pg.id); setSelectedIds(n); }} onMouseEnter={() => { if (!isDragging || dragStartIndex === null) return; const currentIdx = pg.originalIndex; const start = Math.min(dragStartIndex, currentIdx); const end = Math.max(dragStartIndex, currentIdx); const n = new Set(initialSelectedIds); for (let i = start; i <= end; i++) n.add(pages[i].id); setSelectedIds(n); }} onDoubleClick={() => { setPreviewImg(pg.thumb); setIsZoomed(false); }} className={`absolute rounded-xl overflow-hidden border-4 transition-all cursor-pointer shadow-sm group bg-white ${selectedIds.has(pg.id) ? 'border-indigo-600 scale-95 ring-4 ring-indigo-100' : 'border-white hover:border-indigo-200'}`}><div className="absolute top-2 right-2 flex gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={(e) => { e.stopPropagation(); handleRetry(pg.pageNum); }} className="bg-emerald-500 text-white p-1 rounded-full hover:scale-110 shadow-sm" title={t.rerun}><LucideIcon name="play" size={12} className={retryingPage === pg.pageNum ? "animate-spin" : ""} /></button><button onClick={(e) => { e.stopPropagation(); setPreviewImg(pg.thumb); setIsZoomed(false); }} className="bg-slate-800/80 text-white p-1 rounded-full hover:scale-110 shadow-sm"><LucideIcon name="maximize-2" size={12} /></button><button onClick={(e) => { e.stopPropagation(); setPages(p => p.filter(x => x.id !== pg.id)); }} className="bg-rose-500 text-white p-1 rounded-full hover:scale-110 shadow-sm"><LucideIcon name="x" size={12} /></button></div><img src={pg.thumb} className="w-full h-full object-cover pointer-events-none" /><div className="absolute top-2 left-2 bg-black/70 backdrop-blur text-white text-[10px] px-2 py-0.5 rounded-full font-bold">p.{pg.pageNum}</div>{selectedIds.has(pg.id) && <div className="absolute inset-0 bg-indigo-600/20 flex items-center justify-center"><LucideIcon name="check-circle" size={32} className="text-indigo-600 bg-white rounded-full p-1 shadow-lg" /></div>}{/* 완료된 페이지 표시 */ processedPageNums.has(pg.pageNum) && !selectedIds.has(pg.id) && <div className="absolute inset-0 processed-overlay flex items-center justify-center"><div className="bg-emerald-500 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg flex items-center gap-1"><LucideIcon name="check" size={14} /> {t.completed}</div></div>}</div>))}</div></div></div>
+                                <div className="bg-white p-8 rounded-[2rem] shadow-xl h-[850px] flex flex-col relative"><div className="flex justify-between items-center mb-6 flex-shrink-0"><div className="flex items-center gap-4"><h2 className="text-xl font-black italic flex items-center gap-2"><LucideIcon name="layers" /> {t.result}</h2><div className="relative group"><LucideIcon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" /><input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder={t.search} className="pl-9 pr-8 py-1.5 rounded-full border border-slate-200 text-xs font-bold bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-100 w-52 transition-all shadow-sm" />{searchTerm && <button onClick={() => setSearchTerm('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500"><LucideIcon name="x" size={14} /></button>}{searchTerm && <div className="absolute left-0 -bottom-5 text-[10px] text-indigo-500 font-bold ml-2">{filteredResults.reduce((acc, p) => acc + p.items.length, 0)}{t.found}</div>}</div><button onClick={() => setShowRegexModal(true)} className="bg-violet-50 text-violet-600 border border-violet-200 px-2 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-violet-100" title={t.regexSettings}><LucideIcon name="regex" size={14} /> {t.regex}({regexPatterns.filter(r => r.enabled).length})</button></div><div className="flex items-center gap-2"><button onClick={selectAllResult} disabled={results.length === 0} className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100">{t.selectAll}</button><button onClick={deselectAllResult} disabled={results.length === 0} className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg hover:bg-slate-200">{t.deselect}</button>{selectedResultIds.size > 0 ? <button onClick={deleteSelectedResult} className="text-xs font-bold text-rose-600 bg-rose-50 px-3 py-1.5 rounded-lg hover:bg-rose-100">{t.deleteSelected} ({selectedResultIds.size})</button> : <button onClick={handleFullReset} disabled={results.length === 0} className="text-xs font-bold text-rose-600 bg-rose-50 px-3 py-1.5 rounded-lg hover:bg-rose-100">{t.reset}</button>}<div className="w-px h-4 bg-slate-200 mx-2"></div><button onClick={() => setShowFieldsModal(true)} className="bg-slate-100 text-slate-600 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1 hover:bg-slate-200" title={t.fieldSettings}><LucideIcon name="table" size={14} /> {t.fields}({ankiFields.filter(f => f.enabled).length})</button><button onClick={downloadZip} disabled={results.length === 0} className="bg-emerald-500 text-white px-6 py-2 rounded-xl text-xs font-bold shadow-lg shadow-emerald-100 flex items-center gap-2 hover:bg-emerald-600"><LucideIcon name="download" size={16} /> {t.zipDownload}</button></div></div><div className="space-y-4 flex-1 overflow-y-auto custom-scrollbar select-text bg-slate-50 p-6 rounded-2xl border border-slate-200 mb-2">{filteredResults.length === 0 ? <div className="py-20 text-center text-slate-300 italic flex flex-col items-center gap-2"><LucideIcon name="search" size={32} />{searchTerm ? t.noSearchResults : t.noResults}</div> : filteredResults.slice(resultPage * ITEMS_PER_PAGE, (resultPage + 1) * ITEMS_PER_PAGE).map((pageResult, pIdx) => (<div key={pageResult.pageNum} className="space-y-2 mb-8"><div className="flex items-center gap-2"><div className="text-xs font-bold text-slate-400 ml-2 uppercase tracking-wider">Page {pageResult.pageNum}</div><button onClick={() => handleRetry(pageResult.pageNum)} disabled={retryingPage === pageResult.pageNum} className="flex items-center gap-1 text-[10px] px-2 py-1 bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 transition-colors disabled:opacity-50"><LucideIcon name="refresh-cw" size={10} className={retryingPage === pageResult.pageNum ? "animate-spin" : ""} /> {t.rerun}</button></div><div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">{pageResult.items.map((it, iIdx) => (<ResultItem key={it.fName} item={it} pageNum={pageResult.pageNum} isSelected={selectedResultIds.has(it.fName)} isEditing={editingItem && editingItem.pageNum === pageResult.pageNum && editingItem.itemIdx === (it.originalItemIndex ?? iIdx)} isLoading={loadingEditId === `${pageResult.pageNum}-${it.originalItemIndex ?? iIdx}`} tempImg={editingItem?.tempImg} onToggleSelect={toggleSelectResult} onStartEdit={startEditing} onUpdateBbox={updateEditBbox} onEndEdit={endEditing} onDelete={handleDeleteItem} onPreview={handlePreview} />))}</div></div>))}
+                                    {filteredResults.length > ITEMS_PER_PAGE && (
+                                        <div className="flex justify-between items-center bg-white p-2 border-t border-slate-100 flex-shrink-0 mt-2">
+                                            <button
+                                                onClick={() => setResultPage(Math.max(0, resultPage - 1))}
+                                                disabled={resultPage === 0}
+                                                className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                                            >
+                                                <LucideIcon name="chevron-left" size={16} /> {t.prev}
+                                            </button>
+
+                                            <div className="flex items-center gap-2 bg-slate-50 px-4 py-2 rounded-lg border border-slate-200">
+                                                <span className="text-xs font-bold text-slate-400">Page</span>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    max={Math.ceil(filteredResults.length / ITEMS_PER_PAGE)}
+                                                    value={tempPageInput}
+                                                    onFocus={(e) => e.target.select()}
+                                                    onChange={(e) => setTempPageInput(e.target.value)}
+                                                    onKeyDown={(e) => { if (e.key === 'Enter') applyPageInput(); }}
+                                                    onBlur={applyPageInput}
+                                                    className="w-12 text-center bg-white border border-slate-300 rounded text-sm font-bold text-indigo-600 focus:outline-none focus:border-indigo-500"
+                                                />
+                                                <span className="text-xs font-bold text-slate-400">/ {Math.ceil(filteredResults.length / ITEMS_PER_PAGE)}</span>
+                                            </div>
+
+                                            <button
+                                                onClick={() => setResultPage(Math.min(Math.ceil(filteredResults.length / ITEMS_PER_PAGE) - 1, resultPage + 1))}
+                                                disabled={resultPage >= Math.ceil(filteredResults.length / ITEMS_PER_PAGE) - 1}
+                                                className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                                            >
+                                                {t.next} <LucideIcon name="chevron-right" size={16} />
+                                            </button>
+                                        </div>
+                                    )}</div></div>
+                            </main>
+                        </div>
+                        {/* Anki 필드 설정 모달 */}
+                        {showFieldsModal && (
+                            <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center modal-overlay" onClick={() => setShowFieldsModal(false)}>
+                                <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                                    <div className="flex justify-between items-center mb-4 border-b pb-3">
+                                        <h3 className="text-lg font-black flex items-center gap-2">
+                                            <LucideIcon name="table" size={20} /> {t.fieldModalTitle}
+                                        </h3>
+                                        <button onClick={() => setShowFieldsModal(false)} className="text-slate-400 hover:text-slate-600">
+                                            <LucideIcon name="x" size={20} />
+                                        </button>
+                                    </div>
+
+                                    <p className="text-xs text-slate-500 mb-4">
+                                        {t.fieldModalDesc}
+                                    </p>
+
+                                    <div className="space-y-2 mb-4">
+                                        {ankiFields.map((field, idx) => (
+                                            <div key={field.id} className={`flex items-center gap-2 p-3 rounded-xl border ${field.enabled ? 'bg-white border-indigo-200' : 'bg-slate-50 border-slate-200 opacity-60'}`}>
+                                                <button
+                                                    onClick={() => {
+                                                        const newFields = [...ankiFields];
+                                                        newFields[idx] = { ...field, enabled: !field.enabled };
+                                                        setAnkiFields(newFields);
+                                                    }}
+                                                    className={`w-5 h-5 rounded flex items-center justify-center flex-shrink-0 ${field.enabled ? 'bg-indigo-600 text-white' : 'bg-slate-200 border border-slate-300'}`}
+                                                >
+                                                    <LucideIcon name="check" size={12} className={field.enabled ? '' : 'opacity-0'} />
+                                                </button>
+
+                                                <input
+                                                    type="text"
+                                                    value={field.name}
+                                                    onChange={(e) => {
+                                                        const newFields = [...ankiFields];
+                                                        newFields[idx] = { ...field, name: e.target.value };
+                                                        setAnkiFields(newFields);
+                                                    }}
+                                                    className="flex-1 text-sm font-bold border-0 bg-transparent focus:outline-none"
+                                                />
+
+                                                <select
+                                                    value={field.type}
+                                                    onChange={(e) => {
+                                                        const newFields = [...ankiFields];
+                                                        const newType = e.target.value;
+                                                        newFields[idx] = {
+                                                            ...field,
+                                                            type: newType,
+                                                            isImage: ['question', 'solution'].includes(newType)
+                                                        };
+                                                        setAnkiFields(newFields);
+                                                    }}
+                                                    className="text-xs bg-slate-100 border-0 rounded px-2 py-1"
+                                                >
+                                                    <option value="question">{t.questionImg}</option>
+                                                    <option value="solution">{t.solutionImg}</option>
+                                                    <option value="tag">{t.chapterTag}</option>
+                                                    <option value="custom">{t.customField}</option>
+                                                </select>
+
+                                                <button
+                                                    onClick={() => {
+                                                        if (ankiFields.length <= 1) return;
+                                                        setAnkiFields(ankiFields.filter((_, i) => i !== idx));
+                                                    }}
+                                                    className="text-slate-300 hover:text-rose-500"
+                                                >
+                                                    <LucideIcon name="trash-2" size={14} />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    <button
+                                        onClick={() => {
+                                            setAnkiFields([...ankiFields, {
+                                                id: `custom_${Date.now()}`,
+                                                name: '새 필드',
+                                                type: 'custom',
+                                                enabled: true,
+                                                isImage: false,
+                                                defaultValue: ''
+                                            }]);
+                                        }}
+                                        className="w-full py-2 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 hover:border-indigo-400 hover:text-indigo-500 text-sm font-bold flex items-center justify-center gap-2"
+                                    >
+                                        <LucideIcon name="plus" size={16} /> {t.addField}
+                                    </button>
+
+                                    <div className="mt-4 pt-4 border-t flex justify-between">
+                                        <button
+                                            onClick={() => setAnkiFields(DEFAULT_ANKI_FIELDS)}
+                                            className="text-xs text-slate-500 hover:text-slate-700"
+                                        >
+                                            {t.resetDefault}
+                                        </button>
+                                        <button
+                                            onClick={() => setShowFieldsModal(false)}
+                                            className="bg-indigo-600 text-white px-6 py-2 rounded-xl text-sm font-bold hover:bg-indigo-700"
+                                        >
+                                            {t.done}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {/* 정규식 설정 모달 */}
+                        {showRegexModal && (
+                            <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center modal-overlay" onClick={() => setShowRegexModal(false)}>
+                                <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                                    <div className="flex justify-between items-center mb-4 border-b pb-3">
+                                        <h3 className="text-lg font-black flex items-center gap-2">
+                                            <LucideIcon name="regex" size={20} /> {t.regexSettings}
+                                        </h3>
+                                        <button onClick={() => setShowRegexModal(false)} className="text-slate-400 hover:text-slate-600">
+                                            <LucideIcon name="x" size={20} />
+                                        </button>
+                                    </div>
+
+                                    <p className="text-xs text-slate-500 mb-4">
+                                        {t.regexDesc}
+                                    </p>
+
+                                    <div className="space-y-2 mb-4">
+                                        {regexPatterns.map((pattern, idx) => (
+                                            <div key={pattern.id} className={`flex flex-col gap-2 p-3 rounded-xl border ${pattern.enabled ? 'bg-white border-violet-200' : 'bg-slate-50 border-slate-200 opacity-60'}`}>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        onClick={() => {
+                                                            const newPatterns = [...regexPatterns];
+                                                            newPatterns[idx] = { ...pattern, enabled: !pattern.enabled };
+                                                            setRegexPatterns(newPatterns);
+                                                        }}
+                                                        className={`w-5 h-5 rounded flex items-center justify-center ${pattern.enabled ? 'bg-violet-600 text-white' : 'bg-slate-200'}`}
+                                                    >
+                                                        {pattern.enabled && <LucideIcon name="check" size={12} />}
+                                                    </button>
+
+                                                    <input
+                                                        type="text"
+                                                        value={pattern.name}
+                                                        onChange={(e) => {
+                                                            const newPatterns = [...regexPatterns];
+                                                            newPatterns[idx] = { ...pattern, name: e.target.value };
+                                                            setRegexPatterns(newPatterns);
+                                                        }}
+                                                        placeholder={t.regexName}
+                                                        className="flex-1 text-sm font-bold border border-slate-200 rounded px-2 py-1 bg-slate-50 focus:outline-none focus:border-violet-400"
+                                                    />
+
+                                                    <button
+                                                        onClick={() => {
+                                                            setRegexPatterns(regexPatterns.filter((_, i) => i !== idx));
+                                                        }}
+                                                        className="text-slate-300 hover:text-rose-500"
+                                                    >
+                                                        <LucideIcon name="trash-2" size={14} />
+                                                    </button>
+                                                </div>
+                                                <input
+                                                    type="text"
+                                                    value={pattern.regex}
+                                                    onChange={(e) => {
+                                                        const newPatterns = [...regexPatterns];
+                                                        newPatterns[idx] = { ...pattern, regex: e.target.value };
+                                                        setRegexPatterns(newPatterns);
+                                                    }}
+                                                    placeholder={t.regexPattern}
+                                                    className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5 bg-slate-50 focus:outline-none focus:border-violet-400"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {regexPatterns.length === 0 && (
+                                        <div className="py-8 text-center text-slate-300 italic text-sm">
+                                            {language === 'ko' ? '정규식 패턴이 없습니다. 아래 버튼으로 추가하세요.' : language === 'zh' ? '没有正则表达式模式。点击下方按钮添加。' : 'No regex patterns. Click below to add.'}
+                                        </div>
+                                    )}
+
+                                    <button
+                                        onClick={() => {
+                                            setRegexPatterns([...regexPatterns, {
+                                                id: `regex_${Date.now()}`,
+                                                name: '',
+                                                regex: '',
+                                                enabled: true
+                                            }]);
+                                        }}
+                                        className="w-full py-2 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 hover:border-violet-400 hover:text-violet-500 text-sm font-bold flex items-center justify-center gap-2"
+                                    >
+                                        <LucideIcon name="plus" size={16} /> {t.addRegex}
+                                    </button>
+
+                                    <div className="mt-4 p-3 bg-slate-50 rounded-xl text-[10px] text-slate-500">
+                                        <div className="font-bold mb-1">{language === 'ko' ? '예시' : language === 'zh' ? '示例' : 'Example'}:</div>
+                                        <div className="font-mono">^제[\s_]*(\d+)[\s_]*([편장강])</div>
+                                        <div className="mt-1 text-slate-400">{language === 'ko' ? '→ "제_1_편 행정법" → "1편"' : language === 'zh' ? '→ "第_1_章 行政法" → "1章"' : '→ "Chapter_1_" → "1"'}</div>
+                                    </div>
+
+                                    <div className="mt-4 pt-4 border-t flex justify-end">
+                                        <button
+                                            onClick={() => setShowRegexModal(false)}
+                                            className="bg-violet-600 text-white px-6 py-2 rounded-xl text-sm font-bold hover:bg-violet-700"
+                                        >
+                                            {t.done}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {previewImg && (<div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center modal-overlay" onClick={() => { setPreviewImg(null); setIsZoomed(false); }}><button className="absolute top-6 right-6 text-white/70 hover:text-white transition-colors p-2 bg-white/10 rounded-full z-50"><LucideIcon name="x" size={32} /></button><div className="w-full h-full flex items-center justify-center overflow-auto" onClick={e => { if (e.target === e.currentTarget) { setPreviewImg(null); setIsZoomed(false); } }}><img src={previewImg} className={`transition-all duration-300 ease-out shadow-2xl ${isZoomed ? 'cursor-zoom-out' : 'cursor-zoom-in'}`} style={{ transform: isZoomed ? 'scale(2.5)' : 'scale(1)', maxWidth: isZoomed ? 'none' : '90vw', maxHeight: isZoomed ? 'none' : '90vh' }} onClick={(e) => { e.stopPropagation(); setIsZoomed(!isZoomed); }} /></div></div>)}
+                    </div>
+                </ErrorBoundary>
+            );
+        };
+        const root = ReactDOM.createRoot(document.getElementById('root')); root.render(<App />);
+    </script>
+</body>
+
+</html>
