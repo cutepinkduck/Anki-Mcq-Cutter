@@ -56,7 +56,8 @@ pip install fastapi uvicorn httpx python-multipart pymupdf pillow
 
 | OS | 방법 |
 |----|------|
-| **macOS/Linux** | `start.sh` 더블클릭 |
+| **macOS** | `start.command` 더블클릭 |
+| **Linux** | `start.sh` 실행 |
 | **Windows** | `start.bat` 더블클릭 |
 
 > 서버가 자동으로 시작되고, 브라우저에서 앱이 열립니다.
@@ -313,7 +314,8 @@ pip install fastapi uvicorn httpx python-multipart pymupdf pillow
 
 | OS | Method |
 |----|------|
-| **macOS/Linux** | Double-click `start.sh` |
+| **macOS** | Double-click `start.command` |
+| **Linux** | Run `start.sh` |
 | **Windows** | Double-click `start.bat` |
 
 > The server will start automatically, and the app will open in your browser.
@@ -546,7 +548,8 @@ pip install fastapi uvicorn httpx python-multipart pymupdf pillow
 
 | 操作系统 | 方法 |
 |----|------|
-| **macOS/Linux** | 双击 `start.sh` |
+| **macOS** | 双击 `start.command` |
+| **Linux** | 运行 `start.sh` |
 | **Windows** | 双击 `start.bat` |
 
 > 服务器将自动启动，浏览器将打开应用程序。
